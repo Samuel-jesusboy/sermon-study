@@ -1,5 +1,6 @@
 """One place to talk to the AI providers (Claude, OpenAI, Groq) and parse their JSON."""
 import json
+import logging
 import re
 from typing import Optional
 
@@ -34,55 +35,91 @@ def model_name(choice: str) -> str:
     }[choice]
 
 
+log = logging.getLogger("ai")
+
+# OpenAI's GPT-5 family and Groq's gpt-oss models "think" before answering, and that thinking counts
+# against the output limit. Long notes need room, so these get a bigger budget and low reasoning effort.
+REASONING_HEADROOM = 3
+
+
+class _Reply:
+    def __init__(self, text: str, cut_off: bool):
+        self.text, self.cut_off = text, cut_off
+
+
+def _is_param_error(e: Exception, name: str) -> bool:
+    msg = str(e).lower()
+    return name in msg and ("unsupported" in msg or "unrecognized" in msg or "not supported" in msg
+                            or "unknown" in msg or "invalid" in msg)
+
+
+def _chat(client, base: dict, extras: dict):
+    """Call chat.completions, dropping optional parameters the model rejects."""
+    kwargs = {**base, **extras}
+    for _ in range(len(extras) + 1):
+        try:
+            return client.chat.completions.create(**kwargs)
+        except Exception as e:
+            dropped = next((k for k in list(kwargs) if k in extras and _is_param_error(e, k)), None)
+            if not dropped:
+                raise
+            log.info("model rejected %s; retrying without it", dropped)
+            kwargs.pop(dropped)
+    return client.chat.completions.create(**kwargs)
+
+
+def _complete(prompt: str, system: str, choice: str, max_tokens: int, want_json: bool) -> _Reply:
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+    if choice == "claude":
+        import anthropic
+        client = anthropic.Anthropic(api_key=settings.anthropic_api_key, max_retries=3, timeout=900)
+        msg = client.messages.create(model=settings.claude_model, max_tokens=max_tokens, system=system,
+                                     messages=[{"role": "user", "content": prompt}])
+        text = "".join(getattr(b, "text", "") for b in msg.content)
+        return _Reply(text, getattr(msg, "stop_reason", "") == "max_tokens")
+
+    if choice == "openai":
+        from openai import OpenAI
+        client = OpenAI(api_key=settings.openai_api_key, max_retries=3, timeout=900)
+        base = dict(model=settings.openai_model, messages=messages,
+                    max_completion_tokens=max_tokens * REASONING_HEADROOM)
+        extras = {"reasoning_effort": "low"}
+        if want_json:
+            extras["response_format"] = {"type": "json_object"}
+        resp = _chat(client, base, extras)
+    elif choice == "groq":
+        from groq import Groq
+        client = Groq(api_key=settings.groq_api_key, max_retries=3, timeout=900)
+        base = dict(model=settings.groq_model, messages=messages,
+                    max_tokens=min(max_tokens * REASONING_HEADROOM, 65000))
+        extras = {"reasoning_effort": "low"}
+        if want_json:
+            extras["response_format"] = {"type": "json_object"}
+        resp = _chat(client, base, extras)
+    else:
+        raise AIError(f"Unknown model: {choice}")
+
+    choice0 = resp.choices[0]
+    text = choice0.message.content or ""
+    cut_off = getattr(choice0, "finish_reason", "") == "length"
+    if not text.strip():
+        log.warning("%s returned no text (finish_reason=%s)", choice, getattr(choice0, "finish_reason", ""))
+    return _Reply(text, cut_off)
+
+
 def complete(prompt: str, system: str, model_choice: Optional[str] = None,
              max_tokens: int = 4096, want_json: bool = False) -> str:
     choice = resolve_model(model_choice)
     try:
-        if choice == "claude":
-            import anthropic
-            client = anthropic.Anthropic(api_key=settings.anthropic_api_key, max_retries=3, timeout=600)
-            msg = client.messages.create(
-                model=settings.claude_model,
-                max_tokens=max_tokens,
-                system=system,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            text = "".join(getattr(b, "text", "") for b in msg.content)
-            if getattr(msg, "stop_reason", "") == "max_tokens" and want_json:
-                # The JSON was cut off; repair_json below will close it as best it can.
-                pass
-            return text
-
-        if choice == "openai":
-            from openai import OpenAI
-            client = OpenAI(api_key=settings.openai_api_key, max_retries=3, timeout=600)
-            kwargs = dict(
-                model=settings.openai_model,
-                messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-                max_completion_tokens=max_tokens,
-            )
-            if want_json:
-                kwargs["response_format"] = {"type": "json_object"}
-            resp = client.chat.completions.create(**kwargs)
-            return resp.choices[0].message.content or ""
-
-        if choice == "groq":
-            from groq import Groq
-            client = Groq(api_key=settings.groq_api_key, max_retries=3, timeout=600)
-            kwargs = dict(
-                model=settings.groq_model,
-                messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-                max_tokens=max_tokens,
-            )
-            if want_json:
-                kwargs["response_format"] = {"type": "json_object"}
-            resp = client.chat.completions.create(**kwargs)
-            return resp.choices[0].message.content or ""
+        reply = _complete(prompt, system, choice, max_tokens, want_json)
     except AIError:
         raise
     except Exception as e:  # provider SDK errors vary; surface a readable message
         raise AIError(f"{MODEL_LABELS.get(choice, choice)} request failed: {e}") from e
-    raise AIError(f"Unknown model: {choice}")
+    if not reply.text.strip():
+        raise AIError(f"{MODEL_LABELS[choice]} returned an empty reply"
+                      f"{' (it ran out of room)' if reply.cut_off else ''}. Try again or pick another model.")
+    return reply.text
 
 
 def parse_json(raw: str) -> dict:
@@ -104,8 +141,18 @@ def parse_json(raw: str) -> dict:
 
 
 def complete_json(prompt: str, system: str, model_choice: Optional[str] = None,
-                  max_tokens: int = 4096) -> dict:
-    return parse_json(complete(prompt, system, model_choice, max_tokens=max_tokens, want_json=True))
+                  max_tokens: int = 4096, attempts: int = 2) -> dict:
+    """Ask for JSON; on an empty, cut-off or unparseable reply, try once more before giving up."""
+    last: Optional[AIError] = None
+    for attempt in range(attempts):
+        try:
+            return parse_json(complete(prompt, system, model_choice, max_tokens=max_tokens, want_json=True))
+        except AIError as e:
+            last = e
+            if "request failed" in str(e):  # auth, quota, network: retrying won't help
+                raise
+            log.warning("JSON attempt %d failed: %s", attempt + 1, e)
+    raise last
 
 
 def embeddings_available() -> bool:

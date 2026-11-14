@@ -123,3 +123,73 @@ def test_markdown_export_has_sections():
     assert "## 1. Faith sees (12:30)" in md
     assert "**Hebrews 11:1** (12:40)" in md
     assert "## Small group guide" in md and "1. What does faith mean to you?" in md
+
+
+class _FakeCompletions:
+    def __init__(self, replies):
+        self.replies, self.calls = list(replies), []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        r = self.replies.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+
+class _FakeClient:
+    def __init__(self, replies):
+        self.chat = type("Chat", (), {})()
+        self.chat.completions = _FakeCompletions(replies)
+
+
+def _resp(text, finish="stop"):
+    msg = type("M", (), {"content": text})()
+    choice = type("C", (), {"message": msg, "finish_reason": finish})()
+    return type("R", (), {"choices": [choice]})()
+
+
+def test_chat_drops_parameters_the_model_rejects():
+    client = _FakeClient([Exception("Unsupported parameter: 'reasoning_effort' is not supported with this model."),
+                          _resp('{"ok": true}')])
+    out = ai._chat(client, {"model": "m", "messages": []}, {"reasoning_effort": "low", "response_format": {"type": "json_object"}})
+    assert out.choices[0].message.content == '{"ok": true}'
+    assert "reasoning_effort" in client.chat.completions.calls[0]
+    assert "reasoning_effort" not in client.chat.completions.calls[1]
+    assert "response_format" in client.chat.completions.calls[1]
+
+
+def test_chat_reraises_unrelated_errors():
+    client = _FakeClient([Exception("Incorrect API key provided")])
+    with pytest.raises(Exception, match="Incorrect API key"):
+        ai._chat(client, {"model": "m"}, {"reasoning_effort": "low"})
+
+
+def test_complete_json_retries_empty_and_broken_replies(monkeypatch):
+    replies = [ai._Reply("", True), ai._Reply("not json at all", False), ai._Reply('{"title": "Ok"}', False)]
+    monkeypatch.setattr(ai, "_complete", lambda *a, **k: replies.pop(0))
+    with pytest.raises(ai.AIError, match="not valid JSON"):
+        ai.complete_json("p", "s", "groq")            # two attempts: empty, then broken
+    assert ai.complete_json("p", "s", "groq") == {"title": "Ok"}
+
+
+def test_complete_json_does_not_retry_auth_errors(monkeypatch):
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(1)
+        raise RuntimeError("invalid x-api-key")
+    monkeypatch.setattr(ai, "_complete", boom)
+    with pytest.raises(ai.AIError, match="request failed"):
+        ai.complete_json("p", "s", "groq")
+    assert len(calls) == 1
+
+
+def test_openai_gets_reasoning_headroom(monkeypatch):
+    fake = _FakeClient([_resp('{"a": 1}')])
+    import openai
+    monkeypatch.setattr(openai, "OpenAI", lambda **k: fake)
+    monkeypatch.setattr(ai.settings, "openai_api_key", "k")
+    assert ai.complete_json("p", "s", "openai", max_tokens=16000) == {"a": 1}
+    call = fake.chat.completions.calls[0]
+    assert call["max_completion_tokens"] == 48000 and call["reasoning_effort"] == "low"
