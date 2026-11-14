@@ -1,0 +1,28 @@
+# Render Blueprint: New -> Blueprint -> pick this repo. Fill in the secret values when Render asks.
+services:
+  - type: web
+    name: sermon-study-api
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    plan: starter        # the free plan sleeps when idle, which interrupts background jobs
+    healthCheckPath: /health
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false      # your Netlify URL, e.g. https://sermon-study.netlify.app
+      - key: APP_URL
+        sync: false
+      - key: YT_PROXY_URL
+        sync: false      # recommended: YouTube blocks most cloud IPs
+      - key: JOB_WORKERS
+        value: "2"

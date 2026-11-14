@@ -1,0 +1,15 @@
+# Netlify: "Add new site" -> "Import from Git" -> this repo. Settings below are picked up automatically.
+# Set REACT_APP_API_URL, REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_KEY in Site settings -> Environment variables.
+[build]
+  base = "frontend"
+  command = "npm run build"
+  publish = "build"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# Single-page app: share links like /s/<id> load the app, which shows the shared notes.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
