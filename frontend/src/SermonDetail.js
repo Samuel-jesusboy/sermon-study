@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api } from './api';
+import { useApp } from './AppContext';
+import SermonDocument from './SermonDocument';
 
 export function fmtTime(sec) {
   const s = Math.max(0, Math.floor(sec || 0));
@@ -30,11 +32,14 @@ function TimeLink({ seconds, onSeek }) {
 }
 
 export default function SermonDetail({ sermon: initial, onBack, onDelete, startAt, readOnly = false }) {
+  const app = useApp();
   const [sermon, setSermon] = useState(initial);
-  const [tab, setTab] = useState('notes');
+  const [tab, setTab] = useState('document');
   const [seek, setSeek] = useState(() => ({ seconds: startAt ?? initial.sermon_start_seconds ?? 0, autoplay: startAt != null, at: 0 }));
   const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState({ title: initial.title || '', preacher: initial.preacher || '', church_name: initial.church_name || '' });
+  const [form, setForm] = useState({ title: initial.title || '', preacher: initial.preacher || '', church_name: initial.church_name || '',
+    sermon_date: initial.sermon_date || '', series: initial.series || '', main_text: initial.main_text || '' });
+  const outdated = !readOnly && (sermon.curation_version || 1) < 2;
   const top = useRef(null);
   const info = sermon.sermon_start_info || {};
   const group = info.small_group_guide || {};
@@ -55,6 +60,15 @@ export default function SermonDetail({ sermon: initial, onBack, onDelete, startA
       setSermon(s => ({ ...s, ...updated }));
       setEditing(false);
       toast.success('Saved');
+    } catch (e) { toast.error(e.message); }
+  };
+
+  const recurate = async () => {
+    if (!window.confirm('Rewrite this sermon document from its saved transcript, in the latest format? Your title, date, series and sharing stay as they are.')) return;
+    try {
+      const r = await api.recurate(sermon.id, { model: app?.model || undefined });
+      app?.trackJob(r.job);
+      toast.success('Re-curating in the background. The new document opens when it is ready.');
     } catch (e) { toast.error(e.message); }
   };
 
@@ -92,7 +106,7 @@ export default function SermonDetail({ sermon: initial, onBack, onDelete, startA
     } catch (e) { toast.error(e.message); }
   };
 
-  const tabs = [['notes', 'Full notes'], ['verses', 'Verses'], ['study', 'Study'],
+  const tabs = [['document', 'Document'], ['notes', 'Full notes'], ['verses', 'Verses'], ['study', 'Study'],
     ...(hasGroup ? [['group', 'Small group']] : []), ...((sermon.timed_chunks || []).length ? [['transcript', 'Transcript']] : [])];
 
   return (
@@ -115,6 +129,11 @@ export default function SermonDetail({ sermon: initial, onBack, onDelete, startA
               <input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} placeholder="Title" />
               <input value={form.preacher} onChange={e => setForm(f => ({ ...f, preacher: e.target.value }))} placeholder="Preacher" />
               <input value={form.church_name} onChange={e => setForm(f => ({ ...f, church_name: e.target.value }))} placeholder="Church" />
+              <div className="row-3">
+                <label className="form-label">Date preached<input type="date" value={form.sermon_date || ''} onChange={e => setForm(f => ({ ...f, sermon_date: e.target.value }))} /></label>
+                <label className="form-label">Series<input type="text" value={form.series} onChange={e => setForm(f => ({ ...f, series: e.target.value }))} placeholder="e.g. Spiritual Growth" /></label>
+                <label className="form-label">Main text<input type="text" value={form.main_text} onChange={e => setForm(f => ({ ...f, main_text: e.target.value }))} placeholder="e.g. Ephesians 1:17-18" /></label>
+              </div>
               <div className="btn-row"><button className="btn btn-primary btn-sm" onClick={save}>Save</button>
                 <button className="btn btn-sm" onClick={() => setEditing(false)}>Cancel</button></div>
             </div>
@@ -136,21 +155,29 @@ export default function SermonDetail({ sermon: initial, onBack, onDelete, startA
               <button className="btn btn-sm" onClick={download}>Download .md</button>
               <button className="btn btn-sm" onClick={() => window.print()}>Print / PDF</button>
               <button className="btn btn-sm" onClick={() => setEditing(true)}>Edit</button>
+              <button className="btn btn-sm" onClick={recurate} title="Rewrite the document from the saved transcript">Re-curate</button>
               <button className="btn btn-sm btn-danger" onClick={() => onDelete(sermon.id)}>Delete</button>
             </div>
           )}
         </div>
 
+        {outdated && (
+          <div className="upgrade no-print">
+            <span>This sermon was curated before the full documentation format.</span>
+            <button className="btn btn-sm btn-gold" onClick={recurate}>Upgrade to the new format</button>
+          </div>
+        )}
         <div className="tabs-row no-print" style={{ margin: '1rem 1.25rem 0' }}>
           {tabs.map(([id, name]) => (
             <button key={id} className={`tab-btn ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)}>{name}</button>
           ))}
         </div>
 
-        <div className={tab === 'notes' ? '' : 'screen-hidden'}><Notes sermon={sermon} onSeek={onSeek} /></div>
-        <div className={tab === 'verses' ? '' : 'screen-hidden'}><Verses sermon={sermon} onSeek={onSeek} /></div>
-        <div className={tab === 'study' ? '' : 'screen-hidden'}><Study sermon={sermon} /></div>
-        {hasGroup && <div className={tab === 'group' ? '' : 'screen-hidden'}><SmallGroup guide={group} /></div>}
+        <div className={`tab-panel print-me ${tab === 'document' ? '' : 'screen-hidden'}`}><SermonDocument sermon={sermon} onSeek={sermon.video_id ? onSeek : null} /></div>
+        {tab === 'notes' && <div className="tab-panel"><Notes sermon={sermon} onSeek={onSeek} /></div>}
+        {tab === 'verses' && <div className="tab-panel"><Verses sermon={sermon} onSeek={onSeek} /></div>}
+        {tab === 'study' && <div className="tab-panel"><Study sermon={sermon} /></div>}
+        {hasGroup && tab === 'group' && <div className="tab-panel"><SmallGroup guide={group} /></div>}
         {tab === 'transcript' && <Transcript sermon={sermon} onSeek={onSeek} />}
       </div>
     </div>

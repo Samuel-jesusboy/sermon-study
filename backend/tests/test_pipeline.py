@@ -15,6 +15,11 @@ SEGMENTS = [{"text": "Welcome everyone, let's worship", "start": 0.0, "duration"
 
 NOTES = {
     "title": "Grace That Holds", "main_theme": "Grace keeps us", "summary": "S",
+    "sermon_info": {"main_text": "Ephesians 2:8-9", "topic": "Grace", "series": "", "date_mentioned": ""},
+    "overview": "An overview of grace.", "central_message": "Grace saves and keeps.",
+    "main_points": [{"point": "Point one", "summary": "PS", "start_seconds": 610}],
+    "explanations": [{"title": "Charis", "kind": "word study", "explanation": "Gift"}],
+    "key_takeaways": ["Grace is a gift"],
     "introduction": {"opening": "O"}, "full_notes": [{"section_title": "Point one", "start_seconds": 610}],
     "all_bible_verses": [{"reference": "Ephesians 2:8"}], "related_topics": ["grace", "Faith"],
     "small_group_guide": {"icebreaker": "I"},
@@ -175,7 +180,7 @@ def test_list_topics_share_and_delete(db, fake_ai, client, sync_jobs, monkeypatc
 
     assert client.patch(f"/sermons/{sermon_id}", json={"is_public": True}).json()["is_public"] is True
     md = client.get(f"/sermons/{sermon_id}/markdown").json()
-    assert md["filename"] == "grace-that-holds.md" and md["markdown"].startswith("# Grace That Holds")
+    assert md["filename"] == "grace-that-holds.md" and md["markdown"].startswith("# GRACE THAT HOLDS")
 
     assert client.delete(f"/sermons/{sermon_id}").status_code == 200
     assert client.get(f"/sermons/{sermon_id}").status_code == 404
@@ -210,3 +215,49 @@ def test_stale_jobs_marked_failed(db):
     db.tables["jobs"] = [{"id": "j1", "status": "running", "updated_at": "2020-01-01T00:00:00+00:00"}]
     out = jobs.mark_stale(db, [dict(db.tables["jobs"][0])])
     assert out[0]["status"] == "failed" and db.tables["jobs"][0]["status"] == "failed"
+
+
+def test_new_sermon_gets_documentation_fields(db, fake_ai, client, sync_jobs, monkeypatch):
+    monkeypatch.setattr(transcripts, "video_details", lambda vid: {"title": "", "channel": "Grace Church"})
+    monkeypatch.setattr(transcripts, "fetch_captions", lambda vid: SEGMENTS)
+    r = client.post("/sermons/process", json={"url": "dQw4w9WgXcQ", "series": "Foundations", "sermon_date": "2026-11-15"})
+    assert r.status_code == 200, r.text
+    s = db.tables["sermons"][0]
+    assert s["central_message"] == "Grace saves and keeps."
+    assert s["main_text"] == "Ephesians 2:8-9" and s["series"] == "Foundations" and s["sermon_date"] == "2026-11-15"
+    assert s["main_points"][0]["point"] == "Point one" and s["key_takeaways"] == ["Grace is a gift"]
+    assert s["introduction"]["overview"] == "An overview of grace."
+    assert s["curation_version"] == 2
+    # what the user typed is passed to the AI as trusted context
+    assert "- Series: Foundations" in fake_ai[-1] and "- Date preached: 2026-11-15" in fake_ai[-1]
+
+
+def test_bad_date_rejected(db, client):
+    r = client.post("/sermons/process", json={"url": "dQw4w9WgXcQ", "sermon_date": "next sunday"})
+    assert r.status_code == 400
+
+
+def test_recurate_rewrites_from_saved_transcript(db, fake_ai, client, sync_jobs):
+    db.tables["sermons"] = [{"id": "s1", "user_id": USER, "title": "Old title", "preacher": "Pastor Sam",
+                             "series": "Kept series", "sermon_date": "2026-10-01", "is_public": True,
+                             "timed_chunks": [{"seconds": 600 + i * 60, "time": "", "text": f"teaching about grace {i} " * 5}
+                                              for i in range(20)],
+                             "sermon_start_info": {"sermon_start_time": "10:00"}, "created_at": "2026-10-01"}]
+    job_id = client.post("/sermons/s1/recurate", json={}).json()["job"]["id"]
+    assert client.get(f"/jobs/{job_id}").json()["status"] == "done"
+    s = db.tables["sermons"][0]
+    assert s["title"] == "Grace That Holds" and s["central_message"] == "Grace saves and keeps."
+    assert s["series"] == "Kept series" and s["sermon_date"] == "2026-10-01" and s["is_public"] is True
+    assert s["sermon_start_info"]["sermon_start_time"] == "10:00"
+    assert "[10:00] teaching about grace 0" in fake_ai[-1]
+    assert client.post("/sermons/nope/recurate", json={}).status_code == 404
+
+
+def test_library_search_finds_words_said_in_transcript(db, client):
+    db.tables["sermons"] = [{"id": "s1", "user_id": USER, "title": "Walking in Love", "summary": "", "created_at": "2026-11-01"}]
+    db.rpc_handlers["search_sermon_chunks"] = lambda p: [
+        {"sermon_id": "s1", "chunk_index": 3, "start_seconds": 1265, "content": "and the pastor said the mustard seed grows quietly", "score": 1}]
+    rows = client.get("/sermons/list?q=mustard seed").json()
+    assert rows[0]["id"] == "s1"
+    assert rows[0]["transcript_match"]["time"] == "21:05"
+    assert "mustard seed" in rows[0]["transcript_match"]["excerpt"]

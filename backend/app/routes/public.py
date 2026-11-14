@@ -8,7 +8,8 @@ router = APIRouter()
 PUBLIC_COLUMNS = ("id, title, church_name, preacher, main_theme, summary, introduction, full_notes, "
                   "theological_depths, all_bible_verses, notable_quotes, conclusion, practical_applications, "
                   "prayer_points, study_questions, weekly_challenge, topics, video_id, sermon_start_seconds, "
-                  "sermon_start_info, timed_chunks, created_at")
+                  "sermon_start_info, timed_chunks, created_at, sermon_date, series, main_text, central_message, "
+                  "main_points, explanations, key_takeaways, curation_version")
 
 
 @router.get("/sermons/{sermon_id}")

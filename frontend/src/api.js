@@ -59,6 +59,7 @@ export const api = {
   updateSermon: (id, data) => patch(`/sermons/${id}`, data),
   exportMarkdown: (id) => req(`/sermons/${id}/markdown`),
   deleteSermon: (id) => del(`/sermons/${id}`),
+  recurate: (id, data) => post(`/sermons/${id}/recurate`, data),
   publicSermon: (id) => req(`/public/sermons/${id}`),
 
   // Jobs

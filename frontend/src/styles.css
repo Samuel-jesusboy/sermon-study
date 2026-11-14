@@ -270,3 +270,43 @@ button.chunk-time:hover { text-decoration: underline; }
 }
 .tray-badge { background: var(--rose); color: white; border-radius: 10px; padding: 1px 8px; font-size: 11px; }
 a.btn { text-decoration: none; }
+
+/* sermon documentation */
+.sermon-doc { padding: 1.5rem 1.5rem 1rem; }
+.doc-title-block { border-bottom: 2px solid var(--text); padding-bottom: 10px; margin-bottom: 18px; }
+.doc-title { font-family: 'Lora', serif; font-size: 22px; letter-spacing: 0.02em; color: var(--text); }
+.doc-sub { font-size: 13px; color: var(--text-soft); margin-top: 4px; }
+.doc-section { margin-bottom: 22px; }
+.doc-h { font-family: 'Lora', serif; font-size: 17px; color: var(--purple); margin-bottom: 10px; display: flex; align-items: baseline; gap: 6px; }
+.doc-n { color: var(--gold); }
+.doc-h4 { font-size: 15px; font-family: 'Lora', serif; margin: 14px 0 6px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.doc-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.doc-table th, .doc-table td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; line-height: 1.55; }
+.doc-table th { background: var(--cream); font-weight: 600; color: var(--text-mid); width: 28%; }
+.doc-table.refs th { width: auto; }
+.doc-table.refs td { font-size: 13px; color: var(--text-mid); }
+.ref-cell { font-weight: 600; color: var(--gold-deep) !important; white-space: nowrap; }
+.verse-text-small { font-weight: 400; font-style: italic; color: var(--text-mid); white-space: normal; margin-top: 4px; font-size: 12px; }
+.doc-central { font-family: 'Lora', serif; font-size: 17px; line-height: 1.7; color: var(--text); border-left: 4px solid var(--gold); background: var(--gold-light); padding: 12px 16px; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.doc-points { padding-left: 0; list-style: none; }
+.doc-points li { padding: 8px 0; border-bottom: 1px solid var(--border); }
+.doc-point-title { font-weight: 600; font-size: 15px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.doc-details { margin-top: 12px; }
+.doc-details summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--purple); margin-bottom: 6px; }
+.doc-list { padding-left: 20px; font-size: 14px; line-height: 1.7; }
+.doc-list li { margin-bottom: 8px; }
+.doc-takeaways { list-style: none; padding: 0; }
+.doc-takeaways li { padding: 8px 12px 8px 32px; position: relative; background: var(--green-light); border-radius: var(--radius-sm); margin-bottom: 6px; font-size: 14px; font-weight: 500; }
+.doc-takeaways li::before { content: '✓'; position: absolute; left: 12px; color: var(--green); font-weight: 700; }
+.kind { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; background: white; color: var(--text-soft); border: 1px solid var(--border); border-radius: 10px; padding: 1px 7px; margin-left: 6px; }
+.upgrade { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; background: var(--gold-light); color: var(--gold-deep); font-size: 13px; padding: 10px 1.25rem; }
+.said { margin-top: 8px; background: var(--cream); border-radius: var(--radius-sm); padding: 8px 10px; font-size: 12px; color: var(--text-mid); line-height: 1.5; cursor: pointer; }
+.said:hover { background: var(--gold-light); }
+.form-label input { margin-top: 6px; font-weight: 400; }
+@media print {
+  .tab-panel { display: none !important; }
+  .tab-panel.print-me { display: block !important; }
+  .doc-details { display: block; }
+  .doc-section { break-inside: auto; }
+  .doc-h { break-after: avoid; }
+}

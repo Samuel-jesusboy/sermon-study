@@ -108,22 +108,63 @@ def test_resolve_model_falls_back_to_available(monkeypatch):
         ai.resolve_model("claude")
 
 
-def test_markdown_export_has_sections():
+def test_markdown_export_follows_documentation_structure():
     md = sermon_markdown({
-        "title": "Walking by Faith", "preacher": "Pastor Sam", "church_name": "Grace Church",
-        "summary": "A message on trust.", "main_theme": "Trust God",
-        "full_notes": [{"section_number": 1, "section_title": "Faith sees", "start_seconds": 750,
-                        "full_teaching": "Body", "scriptures_in_this_section": [{"reference": "Hebrews 11:1"}]}],
-        "all_bible_verses": [{"reference": "Hebrews 11:1", "start_seconds": 760}],
-        "study_questions": [{"question": "What does faith mean to you?"}],
-        "sermon_start_info": {"small_group_guide": {"icebreaker": "Hi", "discussion": ["Q1"]}},
-        "topics": ["Faith"],
+        "title": "The Power of Spiritual Understanding", "preacher": "Pastor Sam", "church_name": "Grace Church",
+        "sermon_date": "2026-11-15", "series": "Spiritual Growth", "main_text": "Ephesians 1:17-18",
+        "introduction": {"overview": "An overview.", "topic": "Spiritual understanding"},
+        "central_message": "Understanding is given by the Spirit.",
+        "main_points": [{"point": "Understanding God's Word", "summary": "S1", "start_seconds": 750}],
+        "full_notes": [{"section_number": 1, "section_title": "Understanding God's Word", "start_seconds": 750,
+                        "full_teaching": "Body", "illustrations": [{"title": "The lamp", "full_story": "Story"}]}],
+        "all_bible_verses": [{"reference": "Ephesians 1:17", "sermon_context": "Paul's prayer", "relevance": "Source", "start_seconds": 760}],
+        "explanations": [{"title": "Epignosis", "kind": "word study", "explanation": "Full knowledge"}],
+        "notable_quotes": [{"quote": "Light comes before sight."}],
+        "practical_applications": [{"application": "Pray Ephesians 1 daily"}],
+        "study_questions": [{"question": "Where do you need light?", "for": "personal"}],
+        "prayer_points": [{"point": "Father, open my eyes", "scripture_basis": "Ephesians 1:18"}],
+        "key_takeaways": ["Understanding is a gift"],
     })
-    assert md.startswith("# Walking by Faith")
-    assert "## 1. Faith sees (12:30)" in md
-    assert "**Hebrews 11:1** (12:40)" in md
-    assert "## Small group guide" in md and "1. What does faith mean to you?" in md
+    assert md.startswith("# THE POWER OF SPIRITUAL UNDERSTANDING")
+    assert "Sermon documentation · 15 November 2026" in md
+    for n, title in enumerate(["Sermon information", "Sermon overview", "Central message", "Main teaching points",
+                               "Scriptural references", "Important explanations and revelations",
+                               "Illustrations and notable quotes", "Practical applications",
+                               "Reflection and discussion questions", "Prayer points", "Key takeaways"], 1):
+        assert f"## {n}. {title}" in md
+    assert "| Main text | Ephesians 1:17-18 |" in md and "| Series | Spiritual Growth |" in md
+    assert "**Point 1: Understanding God's Word** (12:30)" in md
+    assert "| Ephesians 1:17 (12:40) | Paul's prayer | Source |" in md
+    assert "**Epignosis** *(word study)*" in md
+    assert "1. Father, open my eyes (Ephesians 1:18)" in md
 
+
+def test_markdown_export_handles_older_sermons():
+    md = sermon_markdown({"title": "Old", "main_theme": "Grace", "summary": "Short",
+                          "full_notes": [{"section_title": "First point"}],
+                          "theological_depths": [{"concept": "Grace", "full_explanation": "Unmerited favour"}]})
+    assert "## 3. Central message" in md and "> Grace" in md
+    assert "**Point 1: First point**" in md
+    assert "**Grace**" in md and "## 11. Key takeaways" in md
+
+
+def test_document_fields_mapping():
+    from app.notes import document_fields
+    doc = document_fields({"sermon_info": {"main_text": "John 3:16", "series": "Love", "date_mentioned": "15 Nov"},
+                           "central_message": "God loves", "explanations": [{"title": "Agape", "explanation": "E"}],
+                           "key_takeaways": ["One", "", "Two"], "full_notes": [{"section_title": "A", "start_seconds": 5}]})
+    assert doc["main_text"] == "John 3:16" and doc["series_hint"] == "Love"
+    assert doc["date_hint"] is None                      # only ISO dates are trusted
+    assert doc["main_points"] == [{"point": "A", "summary": "", "start_seconds": 5}]
+    assert doc["theological_depths"] == [{"concept": "Agape", "full_explanation": "E"}]
+    assert doc["key_takeaways"] == ["One", "Two"]
+
+
+def test_prompt_includes_known_details():
+    from app.notes import notes_prompt
+    p = notes_prompt("[0:00] hello", {"Preacher": "Pastor Sam", "Series": ""})
+    assert "- Preacher: Pastor Sam" in p and "Series:" not in p
+    assert "Curate this sermon transcript" in p and '"key_takeaways"' in p
 
 class _FakeCompletions:
     def __init__(self, replies):

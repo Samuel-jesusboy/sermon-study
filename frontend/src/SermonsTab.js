@@ -6,7 +6,7 @@ import { useApp } from './AppContext';
 import ModelSelector from './ModelSelector';
 import SermonDetail from './SermonDetail';
 
-const EMPTY = { url: '', church_name: '', preacher: '', start_time: '', text: '', title: '', file: null };
+const EMPTY = { url: '', church_name: '', preacher: '', start_time: '', text: '', title: '', file: null, sermon_date: '', series: '', main_text: '' };
 
 function AddSermon({ onDone }) {
   const { model, config, trackJob, loadJobs, openSermon } = useApp();
@@ -16,7 +16,8 @@ function AddSermon({ onDone }) {
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
 
   const submit = async () => {
-    const common = { model: model || undefined, church_name: form.church_name, preacher: form.preacher };
+    const common = { model: model || undefined, church_name: form.church_name, preacher: form.preacher,
+      sermon_date: form.sermon_date || null, series: form.series, main_text: form.main_text };
     setBusy(true);
     try {
       if (type === 'single') {
@@ -27,12 +28,12 @@ function AddSermon({ onDone }) {
         } else { trackJob(r.job); toast.success('Processing in the background. You can keep using the app.'); }
       } else if (type === 'playlist') {
         if (!form.url.trim()) throw new Error('Paste a YouTube playlist link');
-        const r = await api.processPlaylist({ ...common, playlist_url: form.url });
+        const r = await api.processPlaylist({ model: common.model, church_name: form.church_name, series: form.series, playlist_url: form.url });
         toast.success(`Queued ${r.queued} sermon${r.queued === 1 ? '' : 's'}${r.skipped_existing ? ` (${r.skipped_existing} already in your library)` : ''}`);
         loadJobs();
       } else if (type === 'upload') {
         if (!form.file) throw new Error('Choose an audio or video file');
-        const r = await api.uploadSermon(form.file, { ...common, model: model || '', sermon_start_time: form.start_time });
+        const r = await api.uploadSermon(form.file, { ...common, model: model || '', sermon_date: form.sermon_date || '', sermon_start_time: form.start_time });
         trackJob(r.job); toast.success('Uploaded. Transcribing in the background.');
       } else {
         if (form.text.trim().length < 200) throw new Error('Paste the full transcript (at least a few paragraphs)');
@@ -94,6 +95,24 @@ function AddSermon({ onDone }) {
           </div>
         )}
       </div>
+      <div className="row-3">
+        {type !== 'playlist' && (
+          <div className="form-group">
+            <label className="form-label">Date preached <span className="opt">(optional)</span></label>
+            <input type="date" value={form.sermon_date} onChange={set('sermon_date')} />
+          </div>
+        )}
+        <div className="form-group">
+          <label className="form-label">Series <span className="opt">(optional)</span></label>
+          <input type="text" value={form.series} onChange={set('series')} placeholder="e.g. Spiritual Growth" />
+        </div>
+        {type !== 'playlist' && (
+          <div className="form-group">
+            <label className="form-label">Main text <span className="opt">(optional)</span></label>
+            <input type="text" value={form.main_text} onChange={set('main_text')} placeholder="e.g. Ephesians 1:17-18" />
+          </div>
+        )}
+      </div>
       {type !== 'playlist' && (
         <div className="form-group">
           <label className="form-label">Sermon start time <span className="opt">(optional, auto-detected if blank)</span></label>
@@ -116,8 +135,8 @@ export default function SermonsTab() {
   const { library, refreshLibrary, openRequest, clearOpenRequest } = useApp();
   const [mode, setMode] = useState('list');
   const [sermons, setSermons] = useState([]);
-  const [index, setIndex] = useState({ topics: [], books: [], churches: [] });
-  const [filter, setFilter] = useState({ q: '', topic: '', church: '', book: '' });
+  const [index, setIndex] = useState({ topics: [], books: [], churches: [], series: [] });
+  const [filter, setFilter] = useState({ q: '', topic: '', church: '', book: '', series: '' });
   const [selected, setSelected] = useState(null);
   const [startAt, setStartAt] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -126,7 +145,7 @@ export default function SermonsTab() {
     setLoading(true);
     try {
       const data = filter.book ? await api.sermonsByBook(filter.book)
-        : await api.listSermons({ q: filter.q, topic: filter.topic, church: filter.church });
+        : await api.listSermons({ q: filter.q, topic: filter.topic, church: filter.church, series: filter.series });
       setSermons(data);
     } catch (e) { toast.error('Could not load sermons: ' + e.message); }
     setLoading(false);
@@ -152,8 +171,8 @@ export default function SermonsTab() {
     catch (e) { toast.error(e.message); }
   };
 
-  const pick = (key, value) => setFilter(f => ({ q: f.q, topic: '', church: '', book: '', [key]: f[key] === value ? '' : value }));
-  const anyFilter = filter.q || filter.topic || filter.church || filter.book;
+  const pick = (key, value) => setFilter(f => ({ q: f.q, topic: '', church: '', book: '', series: '', [key]: f[key] === value ? '' : value }));
+  const anyFilter = filter.q || filter.topic || filter.church || filter.book || filter.series;
 
   if (mode === 'detail' && selected) {
     return <SermonDetail sermon={selected} startAt={startAt} onBack={() => setMode('list')} onDelete={deleteSermon} />;
@@ -172,7 +191,7 @@ export default function SermonsTab() {
 
       {mode === 'list' && (
         <>
-          <input type="text" className="search" value={filter.q} placeholder="Search titles, themes, preachers…"
+          <input type="text" className="search" value={filter.q} placeholder="Search sermons, including what was said…"
             onChange={e => setFilter(f => ({ ...f, q: e.target.value, book: '' }))} />
           {(index.topics.length > 0 || index.books.length > 0) && (
             <div className="browse">
@@ -188,6 +207,12 @@ export default function SermonsTab() {
                   <button key={b.name} className={`chip ${filter.book === b.name ? 'on' : ''}`} onClick={() => pick('book', b.name)}>{b.name} <small>{b.count}</small></button>
                 ))}
               </div>}
+              {(index.series || []).length > 0 && <div className="chip-row">
+                <span className="chip-label">Series</span>
+                {index.series.map(c => (
+                  <button key={c.name} className={`chip ${filter.series === c.name ? 'on' : ''}`} onClick={() => pick('series', c.name)}>{c.name} <small>{c.count}</small></button>
+                ))}
+              </div>}
               {index.churches.length > 1 && <div className="chip-row">
                 <span className="chip-label">Churches</span>
                 {index.churches.map(c => (
@@ -196,7 +221,7 @@ export default function SermonsTab() {
               </div>}
             </div>
           )}
-          {anyFilter && <button className="link-btn" style={{ marginBottom: 10 }} onClick={() => setFilter({ q: '', topic: '', church: '', book: '' })}>Clear filters</button>}
+          {anyFilter && <button className="link-btn" style={{ marginBottom: 10 }} onClick={() => setFilter({ q: '', topic: '', church: '', book: '', series: '' })}>Clear filters</button>}
 
           {loading ? (
             <div className="loading"><div className="spinner" /> Loading sermons…</div>
@@ -211,11 +236,18 @@ export default function SermonsTab() {
               <div className="sermon-meta">
                 {s.church_name && <span className="badge badge-gold">{s.church_name}</span>}
                 {s.preacher && <span className="soft">{s.preacher}</span>}
+                {s.series && <span className="badge badge-purple">{s.series}</span>}
                 {s.is_public && <span className="badge badge-green">Shared</span>}
-                <span className="soft" style={{ marginLeft: 'auto' }}>{s.created_at && format(new Date(s.created_at), 'MMM d, yyyy')}</span>
+                <span className="soft" style={{ marginLeft: 'auto' }}>{format(new Date(s.sermon_date ? `${s.sermon_date}T12:00:00` : s.created_at), 'MMM d, yyyy')}</span>
               </div>
               <h3>{s.title}</h3>
-              <p>{s.summary}</p>
+              {s.main_text && <p className="soft" style={{ marginBottom: 4 }}>{s.main_text}</p>}
+              <p>{s.central_message || s.summary}</p>
+              {s.transcript_match && (
+                <div className="said" onClick={e => { e.stopPropagation(); openSermon(s.id, s.transcript_match.seconds); }}>
+                  <span className="time-link">Said at {s.transcript_match.time}</span> <span>{s.transcript_match.excerpt}</span>
+                </div>
+              )}
               {s.matching_verses && <p className="soft" style={{ marginTop: 6 }}>Verses: {s.matching_verses.slice(0, 6).join(', ')}</p>}
               {(s.topics || []).length > 0 && <div className="chip-row" style={{ marginTop: 8 }}>{s.topics.slice(0, 5).map(t => <span key={t} className="badge badge-purple">{t}</span>)}</div>}
             </div>

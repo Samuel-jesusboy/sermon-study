@@ -95,66 +95,101 @@ Reply with JSON only:
                    "reason": "Could not detect automatically"}
 
 
-NOTES_SYSTEM = """You are an expert Christian theologian, Bible teacher and sermon note-taker.
-Produce FULL, COMPREHENSIVE sermon notes, not a summary: someone reading them months later should get the whole
-teaching without watching the video. Write every point out, tell every illustration, explain every scripture in
-context. Stay faithful to what the preacher actually said; do not invent content, quotes or verses.
-Write the notes in English even if the sermon is in another language or mixes languages (e.g. Pidgin or Yoruba).
-Respond with one valid JSON object only. No markdown, no text outside the JSON."""
+CURATION_VERSION = 2
+
+NOTES_SYSTEM = """You are a sermon documentation editor: a theologically trained note-taker who turns a raw sermon
+transcript into a curated study document for a church's sermon archive.
+
+CURATE, DON'T SUMMARISE. Someone who missed the service should get the complete teaching from your document.
+- Keep every main point, sub-point, argument, scripture, story and application the preacher gave.
+- Remove what doesn't teach: worship, announcements, offering, greetings, crowd call-and-response
+  ("can I get an amen?", "tell your neighbour..."), repetition, false starts and filler.
+- Follow the preacher's own structure. If they number their points, keep that order and wording. If the
+  structure is loose, organise by the logical flow of the argument.
+- Write clear, edited prose in the present tense that carries the preacher's meaning and tone. Attribute
+  claims to the preacher where it matters ("The pastor stresses that...").
+
+BE FAITHFUL.
+- Never add teaching, stories, quotes or verses that are not in the transcript. If the preacher paraphrases a
+  verse, say it is paraphrased.
+- Quote words as spoken only when the transcript clearly has them; lightly clean grammar, never change meaning.
+- Fix obvious transcription errors in names and references (e.g. "Fesians one seventeen" -> Ephesians 1:17).
+- When the preacher uses Pidgin, Yoruba, Igbo or Hausa, write the notes in English and keep a short original
+  phrase in quotes where it carries meaning, with its translation.
+
+Respond with one valid JSON object only: no markdown, no text before or after it."""
 
 
-def notes_prompt(transcript: str) -> str:
-    return f"""Produce full, detailed sermon notes from this transcript. Each line starts with its [timestamp].
-Use those timestamps: give each section the second where it starts (e.g. [12:30] -> 750).
-
+def notes_prompt(transcript: str, known: Optional[dict] = None) -> str:
+    known = known or {}
+    hints = "\n".join(f"- {k}: {v}" for k, v in known.items() if v)
+    hint_block = f"\nDetails already known about this sermon (trust these):\n{hints}\n" if hints else ""
+    return f"""Curate this sermon transcript into a full sermon document. Each transcript line starts with its
+[timestamp]; give start_seconds for points, verses, explanations and quotes (e.g. [12:30] -> 750).
+{hint_block}
 Transcript:
 {transcript}
 
-Return exactly this JSON structure, every field thorough and complete:
+Return exactly this JSON structure. Fill every field thoroughly; use "" or [] only when the sermon truly has nothing.
 {{
-  "title": "Sermon title (infer it if not stated)",
-  "main_theme": "The single central truth of the message in one sentence",
-  "summary": "5-8 sentence summary: what was taught, why it matters, what the listener is called to do",
-  "introduction": {{"opening": "How the preacher opened", "context": "Background set up before the main teaching",
-                    "thesis": "The main statement or question the sermon answers"}},
+  "title": "The sermon's title as stated, or a faithful title if none was given",
+  "sermon_info": {{
+    "main_text": "The primary Bible passage, e.g. Ephesians 1:17-18",
+    "topic": "The topic in a few words",
+    "series": "Series name ONLY if the preacher mentions one, else empty",
+    "date_mentioned": "YYYY-MM-DD ONLY if the date of the service is clearly stated, else empty"
+  }},
+  "overview": "Two short paragraphs: what the message is about, its central argument, and what the preacher wanted the congregation to understand and do",
+  "central_message": "The one teaching or revelation that holds the sermon together, in 1-3 sentences",
+  "main_theme": "The central truth in one sentence",
+  "summary": "A 2-3 sentence description for a library card",
+  "introduction": {{"opening": "How the preacher opened", "context": "Background or setting established",
+                    "thesis": "The question or claim the sermon sets out to answer"}},
+  "main_points": [
+    {{"point": "Short title of main point 1", "summary": "2-3 sentences: what this point teaches", "start_seconds": 750}}
+  ],
   "full_notes": [
     {{
-      "section_title": "Title of this main point",
       "section_number": 1,
+      "section_title": "Same title as main point 1 (one section per main point, same order)",
       "start_seconds": 750,
-      "full_teaching": "The complete teaching for this point in full paragraphs",
-      "illustrations": [{{"title": "Short name", "full_story": "The story as told", "spiritual_point": "The truth it establishes"}}],
-      "scriptures_in_this_section": [{{"reference": "Book Chapter:Verse", "text_as_used": "Verse as quoted",
-                                      "how_preacher_used_it": "How it was taught and applied", "cross_references": ["Book C:V"]}}],
-      "key_statements": ["Notable statements, as close to verbatim as possible"],
-      "section_application": "What this point means for the listener's life"
+      "full_teaching": "The complete curated teaching for this point in full paragraphs, sub-points included",
+      "illustrations": [{{"title": "Short name", "full_story": "The story as told", "spiritual_point": "The truth it illustrates"}}],
+      "scriptures_in_this_section": [{{"reference": "Book C:V", "text_as_used": "Verse as quoted or paraphrased",
+                                      "how_preacher_used_it": "How it supports this point", "cross_references": ["Book C:V"]}}],
+      "key_statements": ["Memorable statements from this section, as spoken"],
+      "section_application": "What this point means for the listener"
     }}
   ],
-  "theological_depths": [{{"concept": "Doctrine addressed", "full_explanation": "How the preacher taught it"}}],
-  "all_bible_verses": [{{"reference": "Book Chapter:Verse", "text_quoted": "Verse as used",
-                        "sermon_context": "Why it was used", "start_seconds": 0, "cross_references": ["Book C:V"]}}],
-  "notable_quotes": [{{"quote": "Exact or near-exact quote", "context": "What it was making a point about", "start_seconds": 0}}],
-  "conclusion": {{"closing_argument": "How it was brought together", "call_to_action": "The response called for",
+  "all_bible_verses": [{{"reference": "Book C:V", "text_quoted": "Verse as used", "sermon_context": "Where and why it came up",
+                        "relevance": "What it establishes in the teaching", "start_seconds": 0, "cross_references": ["Book C:V"]}}],
+  "explanations": [{{"title": "Name of the insight", "kind": "explanation | revelation | theological insight | word study | connection",
+                    "explanation": "The full explanation exactly as the preacher developed it", "scriptures": ["Book C:V"], "start_seconds": 0}}],
+  "notable_quotes": [{{"quote": "Memorable statement as spoken", "context": "What it was making a point about", "start_seconds": 0}}],
+  "conclusion": {{"closing_argument": "How the message was brought together", "call_to_action": "The response called for",
                   "closing_prayer_or_charge": "How it closed"}},
-  "practical_applications": [{{"application": "Concrete action or mindset shift", "why_it_matters": "Why",
-                              "how_to_do_it": "Practical steps"}}],
-  "prayer_points": [{{"point": "Prayer focus from the message", "scripture_basis": "A verse to pray from"}}],
-  "study_questions": [{{"question": "Reflection or discussion question", "what_to_think_about": "Guidance"}}],
-  "small_group_guide": {{"icebreaker": "Opening question", "discussion": ["3-5 discussion questions"],
-                        "activity": "Something to do together", "closing_prayer": "Prayer to close the meeting"}},
+  "practical_applications": [{{"application": "A concrete action or mindset", "why_it_matters": "The reason from the sermon",
+                              "how_to_do_it": "Practical steps for this week"}}],
+  "study_questions": [{{"question": "Reflection or discussion question", "for": "personal | group",
+                       "what_to_think_about": "Guidance or a related verse"}}],
+  "small_group_guide": {{"icebreaker": "Opening question", "discussion": ["3-5 questions"], "activity": "Something to do together",
+                        "closing_prayer": "Prayer to close the meeting"}},
+  "prayer_points": [{{"point": "A first-person prayer drawn from the message, e.g. 'Father, open the eyes of my understanding...'",
+                     "scripture_basis": "Book C:V"}}],
+  "key_takeaways": ["5-8 short, memorable lines: the most important things to remember"],
   "weekly_challenge": "One concrete thing to do this week",
-  "related_topics": ["3-8 short topic tags, e.g. Faith, Prayer, Marriage, Holy Spirit"],
+  "related_topics": ["3-8 short topic tags, e.g. Faith, Prayer, Holy Spirit"],
   "sermon_character": "The preacher's style and how the message was delivered"
 }}"""
 
 
-def write_notes(segments: list[Segment], start_seconds: int, model: str) -> dict:
+def write_notes(segments: list[Segment], start_seconds: int, model: str, known: Optional[dict] = None) -> dict:
     transcript = timed_lines(segments, start_seconds)
     if len(transcript) > MAX_PROMPT_CHARS:
         transcript = transcript[:MAX_PROMPT_CHARS]
     if len(transcript) < 200:
         raise ai.AIError("The transcript is too short to write notes from.")
-    notes = ai.complete_json(notes_prompt(transcript), NOTES_SYSTEM, model, max_tokens=settings.notes_max_tokens)
+    notes = ai.complete_json(notes_prompt(transcript, known), NOTES_SYSTEM, model, max_tokens=settings.notes_max_tokens)
     if not isinstance(notes.get("full_notes"), list):
         notes["full_notes"] = []
     return notes
@@ -181,3 +216,38 @@ def clean_topics(notes: dict) -> list[str]:
 def verse_book(reference: str) -> Optional[str]:
     m = re.match(r"\s*((?:[1-3]\s*)?[A-Za-z][A-Za-z ]*?)\s+\d", reference or "")
     return m.group(1).strip().title() if m else None
+
+
+def _seconds(item) -> Optional[int]:
+    try:
+        v = int(float(item.get("start_seconds"))) if isinstance(item, dict) and item.get("start_seconds") is not None else None
+    except (TypeError, ValueError):
+        return None
+    return v if v and v > 0 else None
+
+
+def document_fields(notes: dict) -> dict:
+    """Map the AI's JSON onto sermon columns, filling older fields so earlier screens keep working."""
+    info = notes.get("sermon_info") or {}
+    explanations = [e for e in notes.get("explanations") or [] if isinstance(e, dict)]
+    full_notes = notes.get("full_notes") or []
+    main_points = [p for p in notes.get("main_points") or [] if isinstance(p, dict) and p.get("point")]
+    if not main_points:  # fall back to the detailed sections
+        main_points = [{"point": s.get("section_title", ""), "summary": "", "start_seconds": s.get("start_seconds")}
+                       for s in full_notes if isinstance(s, dict) and s.get("section_title")]
+    date = (info.get("date_mentioned") or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        date = None
+    return {
+        "main_text": (info.get("main_text") or "").strip(),
+        "series_hint": (info.get("series") or "").strip(),
+        "date_hint": date,
+        "topic": (info.get("topic") or "").strip(),
+        "central_message": notes.get("central_message") or notes.get("main_theme") or "",
+        "overview": notes.get("overview") or notes.get("summary") or "",
+        "main_points": main_points,
+        "explanations": explanations,
+        "theological_depths": [{"concept": e.get("title", ""), "full_explanation": e.get("explanation", "")}
+                               for e in explanations] or (notes.get("theological_depths") or []),
+        "key_takeaways": [t for t in notes.get("key_takeaways") or [] if isinstance(t, str) and t.strip()],
+    }

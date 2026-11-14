@@ -93,6 +93,8 @@ def process(db, user_id: str, job_input: dict, progress, upload_path: Optional[s
     elif source == "paste":
         progress("Reading the pasted transcript", 10)
         segments = transcripts.segments_from_text(job_input.get("transcript_text", ""))
+    elif source == "recurate":
+        return recurate(db, user_id, job_input, progress, model)
     else:
         raise ValueError(f"Unknown source: {source}")
 
@@ -107,8 +109,8 @@ def process(db, user_id: str, job_input: dict, progress, upload_path: Optional[s
         start_seconds, start_info = notes.detect_sermon_start(segments, model)
 
     # 3. Full notes
-    progress("Writing full notes (about a minute)", 50)
-    result = notes.write_notes(segments, start_seconds, model)
+    progress("Curating the sermon document (1-3 minutes)", 50)
+    result = notes.write_notes(segments, start_seconds, model, known_details(job_input))
 
     progress("Saving to your library", 88)
     sermon_text = " ".join(s["text"] for s in segments if s["start"] >= start_seconds)
@@ -126,25 +128,11 @@ def process(db, user_id: str, job_input: dict, progress, upload_path: Optional[s
         "church_id": job_input.get("church_id"),
         "church_name": church_name,
         "preacher": job_input.get("preacher") or "",
-        "title": result.get("title") or details.get("title") or job_input.get("filename") or "Untitled sermon",
-        "main_theme": result.get("main_theme", ""),
-        "summary": result.get("summary", ""),
-        "introduction": result.get("introduction") or {},
-        "full_notes": result.get("full_notes") or [],
-        "theological_depths": result.get("theological_depths") or [],
-        "all_bible_verses": result.get("all_bible_verses") or [],
-        "notable_quotes": result.get("notable_quotes") or [],
-        "conclusion": result.get("conclusion") or {},
-        "practical_applications": result.get("practical_applications") or [],
-        "prayer_points": result.get("prayer_points") or [],
-        "study_questions": result.get("study_questions") or [],
-        "weekly_challenge": result.get("weekly_challenge", ""),
-        "related_topics": result.get("related_topics") or [],
-        "topics": notes.clean_topics(result),
-        "sermon_character": result.get("sermon_character", ""),
+        **curated_fields(result, job_input, fallback_title=details.get("title") or job_input.get("filename")),
         "sermon_start_seconds": start_seconds,
         "sermon_start_info": {**start_info, "transcript_method": method,
                               "small_group_guide": result.get("small_group_guide") or {}},
+        "sermon_date": job_input.get("sermon_date") or notes.document_fields(result)["date_hint"],
         "timed_chunks": timed[:240],
         "full_transcript": full_text[:200_000],
         "sermon_transcript": sermon_text[:200_000],
@@ -161,6 +149,73 @@ def process(db, user_id: str, job_input: dict, progress, upload_path: Optional[s
     except Exception as e:
         log.warning("indexing failed for %s: %s", sermon["id"], e)
     return sermon["id"]
+
+
+def known_details(job_input: dict) -> dict:
+    return {"Preacher": job_input.get("preacher"), "Church": job_input.get("church_name"),
+            "Series": job_input.get("series"), "Date preached": job_input.get("sermon_date"),
+            "Main text": job_input.get("main_text")}
+
+
+def curated_fields(result: dict, job_input: dict, fallback_title: Optional[str] = None) -> dict:
+    """The columns that come from curation (shared by new sermons and re-curation)."""
+    doc = notes.document_fields(result)
+    return {
+        "title": result.get("title") or fallback_title or "Untitled sermon",
+        "main_theme": result.get("main_theme", "") or doc["topic"],
+        "summary": result.get("summary", "") or doc["overview"][:400],
+        "introduction": {**(result.get("introduction") or {}), "overview": doc["overview"], "topic": doc["topic"]},
+        "central_message": doc["central_message"],
+        "main_points": doc["main_points"],
+        "explanations": doc["explanations"],
+        "key_takeaways": doc["key_takeaways"],
+        "main_text": job_input.get("main_text") or doc["main_text"],
+        "series": job_input.get("series") or doc["series_hint"],
+        "full_notes": result.get("full_notes") or [],
+        "theological_depths": doc["theological_depths"],
+        "all_bible_verses": result.get("all_bible_verses") or [],
+        "notable_quotes": result.get("notable_quotes") or [],
+        "conclusion": result.get("conclusion") or {},
+        "practical_applications": result.get("practical_applications") or [],
+        "prayer_points": result.get("prayer_points") or [],
+        "study_questions": result.get("study_questions") or [],
+        "weekly_challenge": result.get("weekly_challenge", ""),
+        "related_topics": result.get("related_topics") or [],
+        "topics": notes.clean_topics(result),
+        "sermon_character": result.get("sermon_character", ""),
+        "curation_version": notes.CURATION_VERSION,
+    }
+
+
+def recurate(db, user_id: str, job_input: dict, progress, model: str) -> str:
+    """Rebuild an existing sermon's document from its saved transcript (no YouTube needed)."""
+    sermon_id = job_input.get("sermon_id")
+    rows = db.table("sermons").select("*").eq("id", sermon_id).eq("user_id", user_id).limit(1).execute().data
+    if not rows:
+        raise ValueError("That sermon no longer exists.")
+    s = rows[0]
+    progress("Reading the saved transcript", 10)
+    segments = [{"text": c.get("text", ""), "start": float(c.get("seconds") or 0), "duration": 60.0}
+                for c in s.get("timed_chunks") or [] if c.get("text")]
+    if not segments and s.get("sermon_transcript"):
+        segments = transcripts.segments_from_text(s["sermon_transcript"])
+    if not segments:
+        raise transcripts.TranscriptError("This sermon has no saved transcript to re-curate.")
+    known = {"preacher": s.get("preacher"), "church_name": s.get("church_name"), "series": s.get("series"),
+             "sermon_date": s.get("sermon_date"), "main_text": s.get("main_text")}
+    progress("Curating the sermon document (1-3 minutes)", 30)
+    result = notes.write_notes(segments, 0, model, known_details(known))
+    progress("Saving the new document", 90)
+    fields = curated_fields(result, known, fallback_title=s.get("title"))
+    fields["introduction"] = {**fields["introduction"]}
+    info = dict(s.get("sermon_start_info") or {})
+    info["small_group_guide"] = result.get("small_group_guide") or info.get("small_group_guide") or {}
+    fields["sermon_start_info"] = info
+    fields["model_used"] = model
+    if not s.get("sermon_date"):
+        fields["sermon_date"] = notes.document_fields(result)["date_hint"]
+    db.table("sermons").update(fields).eq("id", sermon_id).eq("user_id", user_id).execute()
+    return sermon_id
 
 
 def index_sermon(db, user_id: str, sermon_id: str, segments: list, start_seconds: int) -> int:
