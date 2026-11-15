@@ -82,7 +82,7 @@ Reply with JSON only:
 {{"sermon_start_seconds": <integer>, "sermon_start_time": "<like 12:34>", "confidence": "high|medium|low",
 "reason": "<the signal you found>"}}"""
     try:
-        result = ai.complete_json(prompt, system, model, max_tokens=600)
+        result = ai.complete_json(prompt, system, model, max_tokens=600, task="start")
         seconds = max(0, int(float(result.get("sermon_start_seconds") or 0)))
         last = segments[-1]["start"] if segments else 0
         if seconds > last:
@@ -121,14 +121,13 @@ Respond with one valid JSON object only: no markdown, no text before or after it
 
 
 def notes_prompt(transcript: str, known: Optional[dict] = None) -> str:
+    """The fixed instructions and schema come first and the transcript last, so the long shared prefix
+    can be cached by the provider (cached input is billed at 5-10% of the normal rate)."""
     known = known or {}
     hints = "\n".join(f"- {k}: {v}" for k, v in known.items() if v)
-    hint_block = f"\nDetails already known about this sermon (trust these):\n{hints}\n" if hints else ""
-    return f"""Curate this sermon transcript into a full sermon document. Each transcript line starts with its
-[timestamp]; give start_seconds for points, verses, explanations and quotes (e.g. [12:30] -> 750).
-{hint_block}
-Transcript:
-{transcript}
+    hint_block = f"Details already known about this sermon (trust these):\n{hints}\n\n" if hints else ""
+    return f"""Curate this sermon transcript (it is at the end of this message) into a full sermon document. Each transcript line
+starts with its [timestamp]; give start_seconds for points, verses, explanations and quotes (e.g. [12:30] -> 750).
 
 Return exactly this JSON structure. Fill every field thoroughly; use "" or [] only when the sermon truly has nothing.
 {{
@@ -180,16 +179,21 @@ Return exactly this JSON structure. Fill every field thoroughly; use "" or [] on
   "weekly_challenge": "One concrete thing to do this week",
   "related_topics": ["3-8 short topic tags, e.g. Faith, Prayer, Holy Spirit"],
   "sermon_character": "The preacher's style and how the message was delivered"
-}}"""
+}}
+
+{hint_block}Transcript:
+{transcript}"""
 
 
-def write_notes(segments: list[Segment], start_seconds: int, model: str, known: Optional[dict] = None) -> dict:
+def write_notes(segments: list[Segment], start_seconds: int, model: str, known: Optional[dict] = None,
+                premium: bool = False) -> dict:
     transcript = timed_lines(segments, start_seconds)
     if len(transcript) > MAX_PROMPT_CHARS:
         transcript = transcript[:MAX_PROMPT_CHARS]
     if len(transcript) < 200:
         raise ai.AIError("The transcript is too short to write notes from.")
-    notes = ai.complete_json(notes_prompt(transcript, known), NOTES_SYSTEM, model, max_tokens=settings.notes_max_tokens)
+    notes = ai.complete_json(notes_prompt(transcript, known), NOTES_SYSTEM, model, max_tokens=settings.notes_max_tokens,
+                             task="notes_premium" if premium else "notes")
     if not isinstance(notes.get("full_notes"), list):
         notes["full_notes"] = []
     return notes

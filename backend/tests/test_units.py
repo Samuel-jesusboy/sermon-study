@@ -234,3 +234,79 @@ def test_openai_gets_reasoning_headroom(monkeypatch):
     assert ai.complete_json("p", "s", "openai", max_tokens=16000) == {"a": 1}
     call = fake.chat.completions.calls[0]
     assert call["max_completion_tokens"] == 48000 and call["reasoning_effort"] == "low"
+
+
+def test_pricing_math():
+    from app import pricing
+    assert pricing.text_cost("gpt-5.5", 1_000_000, 0, 0) == pytest.approx(5.0)
+    assert pricing.text_cost("gpt-5.4-mini", 1_000_000, 1_000_000, 1_000_000) == pytest.approx(0.075 + 4.5)
+    assert pricing.text_cost("claude-haiku-5-5", 200_000, 0, 0) == pytest.approx(0.1)   # 5x above 100K
+    assert pricing.text_cost("unknown-model", 10, 0, 10) is None
+    assert pricing.audio_cost("gpt-transcribe", 3600) == pytest.approx(0.27)
+    assert pricing.audio_cost("whisper-large-v3-turbo", 3600) == pytest.approx(0.04)
+    assert pricing.audio_cost("whisper-large-v3-turbo", 2) == pytest.approx(10 / 60 * 0.04 / 60, abs=1e-6)  # 10s minimum
+
+
+def test_price_overrides(monkeypatch):
+    from app import pricing
+    monkeypatch.setenv("PRICE_OVERRIDES", '{"gpt-5.4": [1, 0.1, 2]}')
+    assert pricing.text_cost("gpt-5.4", 1_000_000, 0, 1_000_000) == pytest.approx(3.0)
+
+
+def test_usage_numbers_from_each_provider():
+    assert ai._usage_numbers({"prompt_tokens": 100, "completion_tokens": 20,
+                              "prompt_tokens_details": {"cached_tokens": 40}}) == (100, 40, 20)
+    claude = type("U", (), {"input_tokens": 60, "cache_read_input_tokens": 40, "output_tokens": 20})()
+    assert ai._usage_numbers(claude) == (100, 40, 20)
+    assert ai._usage_numbers(None) == (0, 0, 0)
+
+
+def test_task_tiers_follow_settings(monkeypatch):
+    assert ai.model_for("openai", "notes") == "gpt-5.4"
+    assert ai.model_for("openai", "notes_premium") == "gpt-5.5"
+    assert ai.model_for("openai", "ask") == "gpt-5.4-mini"
+    assert ai.model_for("openai", "start") == "gpt-5.4-nano"
+    assert ai.model_for("claude", "notes") == "claude-sonnet-5-5" and ai.model_for("claude", "ask") == "claude-haiku-5-5"
+    monkeypatch.setitem(ai.settings.openai_models, "fast", "gpt-5.4-nano")
+    assert ai.model_for("openai", "verse") == "gpt-5.4-nano"
+
+
+def test_transcription_spreads_plain_text_and_records_cost(monkeypatch, tmp_path):
+    from app import transcripts, usage
+    part = tmp_path / "part_000.mp3"
+    part.write_bytes(b"x" * 480_000)                     # 120 s at 32 kbit/s
+    monkeypatch.setattr(transcripts.settings, "groq_api_key", "")
+    monkeypatch.setattr(transcripts.settings, "openai_api_key", "k")
+    monkeypatch.setattr(transcripts, "_openai_transcribe",
+                        lambda fh, model: ({"text": "First sentence here. Second one is longer than the first."}, False))
+    with usage.tracking(None, "u") as t:
+        segs = transcripts.transcribe_file(str(part), 600)
+    assert [s["text"] for s in segs] == ["First sentence here.", "Second one is longer than the first."]
+    assert segs[0]["start"] == 600 and 600 < segs[1]["start"] < 720
+    assert t.records[0]["model"] == "gpt-transcribe" and t.records[0]["audio_seconds"] == 120
+    assert t.records[0]["cost_usd"] == pytest.approx(0.009)  # 2 min x $0.0045
+
+
+def test_openai_transcribe_falls_back_to_plain_json():
+    from app import transcripts
+    calls = []
+
+    class FakeTranscriptions:
+        def create(self, **kw):
+            calls.append(kw)
+            if kw.get("response_format") == "verbose_json":
+                raise Exception("response_format 'verbose_json' is not compatible with gpt-transcribe")
+            return {"text": "ok"}
+
+    class FakeOpenAI:
+        def __init__(self, **k):
+            self.audio = type("A", (), {"transcriptions": FakeTranscriptions()})()
+    import openai, io
+    orig = openai.OpenAI
+    openai.OpenAI = FakeOpenAI
+    try:
+        resp, timed = transcripts._openai_transcribe(io.BytesIO(b"abc"), "gpt-transcribe")
+    finally:
+        openai.OpenAI = orig
+    assert timed is False and resp == {"text": "ok"}
+    assert [c["response_format"] for c in calls] == ["verbose_json", "json"]

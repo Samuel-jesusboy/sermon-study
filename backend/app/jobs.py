@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from . import ai, notes, transcripts
+from . import ai, notes, transcripts, usage
 from .config import settings
 from .db import user_db
 
@@ -57,16 +57,22 @@ def run_job(token: str, user_id: str, job_id: str, job_input: dict, upload_path:
         except Exception as e:  # progress is best effort
             log.warning("progress update failed: %s", e)
 
+    tracker = None
     try:
-        sermon_id = process(db, user_id, job_input, progress, upload_path)
+        with usage.tracking(db, user_id, job_id=job_id) as tracker:
+            sermon_id = process(db, user_id, job_input, progress, upload_path)
+            tracker.sermon_id = sermon_id
+        save_costs(db, user_id, job_id, sermon_id, tracker)
         db.table("jobs").update({"status": "done", "step": "Notes ready", "progress": 100,
                                  "sermon_id": sermon_id, "error": None}).eq("id", job_id).execute()
     except Exception as e:
         log.exception("job %s failed", job_id)
         message = str(e) or e.__class__.__name__
         try:
-            db.table("jobs").update({"status": "failed", "step": "Failed", "error": message[:1000]}) \
-                .eq("id", job_id).execute()
+            fail = {"status": "failed", "step": "Failed", "error": message[:1000]}
+            if tracker is not None and tracker.records:
+                fail["cost_usd"] = tracker.total_cost  # failed attempts still cost money
+            db.table("jobs").update(fail).eq("id", job_id).execute()
         except Exception:
             log.exception("could not record failure for job %s", job_id)
     finally:
@@ -109,8 +115,9 @@ def process(db, user_id: str, job_input: dict, progress, upload_path: Optional[s
         start_seconds, start_info = notes.detect_sermon_start(segments, model)
 
     # 3. Full notes
-    progress("Curating the sermon document (1-3 minutes)", 50)
-    result = notes.write_notes(segments, start_seconds, model, known_details(job_input))
+    progress(f"Curating the sermon document with {ai.model_for(model, 'notes_premium' if job_input.get('premium') else 'notes')} (1-3 minutes)", 50)
+    result = notes.write_notes(segments, start_seconds, model, known_details(job_input),
+                               premium=bool(job_input.get("premium")))
 
     progress("Saving to your library", 88)
     sermon_text = " ".join(s["text"] for s in segments if s["start"] >= start_seconds)
@@ -136,7 +143,7 @@ def process(db, user_id: str, job_input: dict, progress, upload_path: Optional[s
         "timed_chunks": timed[:240],
         "full_transcript": full_text[:200_000],
         "sermon_transcript": sermon_text[:200_000],
-        "model_used": model,
+        "model_used": ai.model_for(model, "notes_premium" if job_input.get("premium") else "notes"),
         "source": source,
         "duration_seconds": duration,
     }
@@ -149,6 +156,23 @@ def process(db, user_id: str, job_input: dict, progress, upload_path: Optional[s
     except Exception as e:
         log.warning("indexing failed for %s: %s", sermon["id"], e)
     return sermon["id"]
+
+
+def save_costs(db, user_id: str, job_id: str, sermon_id: str, tracker) -> None:
+    """Total this job's AI spend onto the job and the sermon (re-curations add to the sermon's total)."""
+    if tracker is None or not tracker.records:
+        return
+    try:
+        db.table("jobs").update({"cost_usd": tracker.total_cost}).eq("id", job_id).execute()
+        rows = db.table("sermons").select("cost_usd, models_used").eq("id", sermon_id).eq("user_id", user_id) \
+            .limit(1).execute().data
+        prev = rows[0] if rows else {}
+        db.table("sermons").update({
+            "cost_usd": round(float(prev.get("cost_usd") or 0) + tracker.total_cost, 6),
+            "models_used": {**(prev.get("models_used") or {}), **tracker.models_used},
+        }).eq("id", sermon_id).eq("user_id", user_id).execute()
+    except Exception as e:
+        log.warning("could not save costs for job %s: %s", job_id, e)
 
 
 def known_details(job_input: dict) -> dict:
@@ -204,14 +228,14 @@ def recurate(db, user_id: str, job_input: dict, progress, model: str) -> str:
     known = {"preacher": s.get("preacher"), "church_name": s.get("church_name"), "series": s.get("series"),
              "sermon_date": s.get("sermon_date"), "main_text": s.get("main_text")}
     progress("Curating the sermon document (1-3 minutes)", 30)
-    result = notes.write_notes(segments, 0, model, known_details(known))
+    result = notes.write_notes(segments, 0, model, known_details(known), premium=bool(job_input.get("premium")))
     progress("Saving the new document", 90)
     fields = curated_fields(result, known, fallback_title=s.get("title"))
     fields["introduction"] = {**fields["introduction"]}
     info = dict(s.get("sermon_start_info") or {})
     info["small_group_guide"] = result.get("small_group_guide") or info.get("small_group_guide") or {}
     fields["sermon_start_info"] = info
-    fields["model_used"] = model
+    fields["model_used"] = ai.model_for(model, "notes_premium" if job_input.get("premium") else "notes")
     if not s.get("sermon_date"):
         fields["sermon_date"] = notes.document_fields(result)["date_hint"]
     db.table("sermons").update(fields).eq("id", sermon_id).eq("user_id", user_id).execute()

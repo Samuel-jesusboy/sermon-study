@@ -6,6 +6,7 @@ from typing import Optional
 
 from json_repair import repair_json
 
+from . import usage
 from .config import settings
 
 
@@ -27,12 +28,36 @@ def resolve_model(choice: Optional[str]) -> str:
     return available[0]
 
 
+# Which tier of model each job uses. "main" writes the documents; cheaper tiers do the simpler, frequent work.
+TASK_TIERS = {
+    "notes": "main",
+    "notes_premium": "premium",
+    "guide": "main",
+    "ask": "fast",
+    "verse": "fast",
+    "start": "tiny",
+}
+
+
+def model_for(provider: str, task: str = "notes") -> str:
+    return settings.models_for(provider)[TASK_TIERS.get(task, "main")]
+
+
 def model_name(choice: str) -> str:
-    return {
-        "claude": settings.claude_model,
-        "openai": settings.openai_model,
-        "groq": settings.groq_model,
-    }[choice]
+    return model_for(choice, "notes")
+
+
+def _usage_numbers(u) -> tuple[int, int, int]:
+    """(input, cached input, output) from an OpenAI/Groq or Anthropic usage object."""
+    if u is None:
+        return 0, 0, 0
+    get = (lambda o, k: o.get(k) if isinstance(o, dict) else getattr(o, k, None))
+    if get(u, "prompt_tokens") is not None:  # OpenAI / Groq
+        details = get(u, "prompt_tokens_details")
+        cached = (get(details, "cached_tokens") if details is not None else 0) or 0
+        return int(get(u, "prompt_tokens") or 0), int(cached), int(get(u, "completion_tokens") or 0)
+    cached = int(get(u, "cache_read_input_tokens") or 0)  # Anthropic reports cached reads separately
+    return int(get(u, "input_tokens") or 0) + cached, cached, int(get(u, "output_tokens") or 0)
 
 
 log = logging.getLogger("ai")
@@ -43,8 +68,8 @@ REASONING_HEADROOM = 3
 
 
 class _Reply:
-    def __init__(self, text: str, cut_off: bool):
-        self.text, self.cut_off = text, cut_off
+    def __init__(self, text: str, cut_off: bool, model: str = "", usage_obj=None):
+        self.text, self.cut_off, self.model, self.usage = text, cut_off, model, usage_obj
 
 
 def _is_param_error(e: Exception, name: str) -> bool:
@@ -68,20 +93,24 @@ def _chat(client, base: dict, extras: dict):
     return client.chat.completions.create(**kwargs)
 
 
-def _complete(prompt: str, system: str, choice: str, max_tokens: int, want_json: bool) -> _Reply:
+def _complete(prompt: str, system: str, choice: str, max_tokens: int, want_json: bool,
+              task: str = "notes") -> _Reply:
     messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+    model = model_for(choice, task)
     if choice == "claude":
         import anthropic
         client = anthropic.Anthropic(api_key=settings.anthropic_api_key, max_retries=3, timeout=900)
-        msg = client.messages.create(model=settings.claude_model, max_tokens=max_tokens, system=system,
+        # The system prompt is identical on every call, so mark it cacheable (cached reads cost 5-10%).
+        msg = client.messages.create(model=model, max_tokens=max_tokens,
+                                     system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
                                      messages=[{"role": "user", "content": prompt}])
         text = "".join(getattr(b, "text", "") for b in msg.content)
-        return _Reply(text, getattr(msg, "stop_reason", "") == "max_tokens")
+        return _Reply(text, getattr(msg, "stop_reason", "") == "max_tokens", model, getattr(msg, "usage", None))
 
     if choice == "openai":
         from openai import OpenAI
         client = OpenAI(api_key=settings.openai_api_key, max_retries=3, timeout=900)
-        base = dict(model=settings.openai_model, messages=messages,
+        base = dict(model=model, messages=messages,
                     max_completion_tokens=max_tokens * REASONING_HEADROOM)
         extras = {"reasoning_effort": "low"}
         if want_json:
@@ -90,7 +119,7 @@ def _complete(prompt: str, system: str, choice: str, max_tokens: int, want_json:
     elif choice == "groq":
         from groq import Groq
         client = Groq(api_key=settings.groq_api_key, max_retries=3, timeout=900)
-        base = dict(model=settings.groq_model, messages=messages,
+        base = dict(model=model, messages=messages,
                     max_tokens=min(max_tokens * REASONING_HEADROOM, 65000))
         extras = {"reasoning_effort": "low"}
         if want_json:
@@ -104,18 +133,20 @@ def _complete(prompt: str, system: str, choice: str, max_tokens: int, want_json:
     cut_off = getattr(choice0, "finish_reason", "") == "length"
     if not text.strip():
         log.warning("%s returned no text (finish_reason=%s)", choice, getattr(choice0, "finish_reason", ""))
-    return _Reply(text, cut_off)
+    return _Reply(text, cut_off, model, getattr(resp, "usage", None))
 
 
 def complete(prompt: str, system: str, model_choice: Optional[str] = None,
-             max_tokens: int = 4096, want_json: bool = False) -> str:
+             max_tokens: int = 4096, want_json: bool = False, task: str = "notes") -> str:
     choice = resolve_model(model_choice)
     try:
-        reply = _complete(prompt, system, choice, max_tokens, want_json)
+        reply = _complete(prompt, system, choice, max_tokens, want_json, task)
     except AIError:
         raise
     except Exception as e:  # provider SDK errors vary; surface a readable message
         raise AIError(f"{MODEL_LABELS.get(choice, choice)} request failed: {e}") from e
+    inp, cached, out = _usage_numbers(reply.usage)
+    usage.record(task, choice, reply.model or model_for(choice, task), inp, cached, out)
     if not reply.text.strip():
         raise AIError(f"{MODEL_LABELS[choice]} returned an empty reply"
                       f"{' (it ran out of room)' if reply.cut_off else ''}. Try again or pick another model.")
@@ -141,12 +172,12 @@ def parse_json(raw: str) -> dict:
 
 
 def complete_json(prompt: str, system: str, model_choice: Optional[str] = None,
-                  max_tokens: int = 4096, attempts: int = 2) -> dict:
+                  max_tokens: int = 4096, attempts: int = 2, task: str = "notes") -> dict:
     """Ask for JSON; on an empty, cut-off or unparseable reply, try once more before giving up."""
     last: Optional[AIError] = None
     for attempt in range(attempts):
         try:
-            return parse_json(complete(prompt, system, model_choice, max_tokens=max_tokens, want_json=True))
+            return parse_json(complete(prompt, system, model_choice, max_tokens=max_tokens, want_json=True, task=task))
         except AIError as e:
             last = e
             if "request failed" in str(e):  # auth, quota, network: retrying won't help
@@ -169,4 +200,7 @@ def embed(texts: list[str]) -> Optional[list[list[float]]]:
     for i in range(0, len(texts), 96):
         resp = client.embeddings.create(model=settings.embedding_model, input=texts[i:i + 96])
         out.extend(d.embedding for d in resp.data)
+        u = getattr(resp, "usage", None)
+        usage.record("embed", "openai", settings.embedding_model,
+                     input_tokens=int(getattr(u, "prompt_tokens", 0) or getattr(u, "total_tokens", 0) or 0))
     return out

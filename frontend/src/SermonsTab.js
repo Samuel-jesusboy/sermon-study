@@ -4,9 +4,10 @@ import { format } from 'date-fns';
 import { api } from './api';
 import { useApp } from './AppContext';
 import ModelSelector from './ModelSelector';
+import { tiersFor } from './modelInfo';
 import SermonDetail from './SermonDetail';
 
-const EMPTY = { url: '', church_name: '', preacher: '', start_time: '', text: '', title: '', file: null, sermon_date: '', series: '', main_text: '' };
+const EMPTY = { url: '', church_name: '', preacher: '', start_time: '', text: '', title: '', file: null, sermon_date: '', series: '', main_text: '', premium: false };
 
 function AddSermon({ onDone }) {
   const { model, config, trackJob, loadJobs, openSermon } = useApp();
@@ -17,7 +18,7 @@ function AddSermon({ onDone }) {
 
   const submit = async () => {
     const common = { model: model || undefined, church_name: form.church_name, preacher: form.preacher,
-      sermon_date: form.sermon_date || null, series: form.series, main_text: form.main_text };
+      sermon_date: form.sermon_date || null, series: form.series, main_text: form.main_text, premium: form.premium };
     setBusy(true);
     try {
       if (type === 'single') {
@@ -119,6 +120,16 @@ function AddSermon({ onDone }) {
           <input type="text" value={form.start_time} onChange={set('start_time')} placeholder="e.g. 14:32" style={{ maxWidth: 200 }} />
         </div>
       )}
+
+      {type !== 'playlist' && (() => {
+        const tiers = tiersFor(config, model);
+        return tiers.notes_premium && tiers.notes_premium !== tiers.notes ? (
+          <label className="check premium-check">
+            <input type="checkbox" checked={form.premium} onChange={e => setForm(f => ({ ...f, premium: e.target.checked }))} />
+            <span><strong>Premium quality</strong> <span className="soft">writes with <code>{tiers.notes_premium}</code> instead of <code>{tiers.notes}</code>, at roughly twice the cost. Worth it for important sermons.</span></span>
+          </label>
+        ) : null;
+      })()}
 
       <div className="form-foot">
         <ModelSelector />

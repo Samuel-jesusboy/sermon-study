@@ -41,6 +41,7 @@ const qs = (params) => {
 
 export const api = {
   config: () => req('/config'),
+  usage: (days = 30) => req(`/usage?days=${days}`),
 
   // Sermons
   processSermon: (data) => post('/sermons/process', data),

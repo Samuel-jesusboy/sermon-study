@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from .. import ai
+from .. import ai, usage
 from ..auth import CurrentUser, get_current_user
 from ..transcripts import format_time
 from .bible import fetch_passage
@@ -102,6 +102,12 @@ Use short paragraphs and Markdown."""
 
 @router.post("/")
 def ask(req: AskRequest, user: CurrentUser = Depends(get_current_user)):
+    with usage.tracking(user.db, user.id, sermon_id=req.sermon_id) as t:
+        out = _ask(req, user)
+    return {**out, "cost_usd": t.total_cost}
+
+
+def _ask(req: AskRequest, user: CurrentUser) -> dict:
     passages = retrieve(user, req.question, req.sermon_id)
     meta = sermon_titles(user, [p["sermon_id"] for p in passages])
     sources = build_sources(passages, meta)
@@ -113,15 +119,21 @@ def ask(req: AskRequest, user: CurrentUser = Depends(get_current_user)):
         context = "(No matching passages were found in the user's sermon library.)"
     prompt = f"Question: {req.question}\n\nSermon excerpts:\n{context}"
     try:
-        answer = ai.complete(prompt, SYSTEM, req.model, max_tokens=2000)
+        answer = ai.complete(prompt, SYSTEM, req.model, max_tokens=2000, task="ask")
     except ai.AIError as e:
         raise HTTPException(status_code=502, detail=str(e))
     return {"question": req.question, "answer": answer, "sources": sources,
-            "model_used": ai.resolve_model(req.model), "library_matches": len(sources)}
+            "model_used": ai.model_for(ai.resolve_model(req.model), "ask"), "library_matches": len(sources)}
 
 
 @router.post("/explain-verse")
 async def explain_verse(req: AskRequest, user: CurrentUser = Depends(get_current_user)):
+    with usage.tracking(user.db, user.id) as t:
+        out = await _explain(req, user)
+    return {**out, "cost_usd": t.total_cost}
+
+
+async def _explain(req: AskRequest, user: CurrentUser) -> dict:
     verse_text = ""
     try:
         passage = await fetch_passage(req.question, "kjv")
@@ -139,8 +151,9 @@ book, key words, cross-references, and how it applies today. If the user's sermo
 connect to them and cite like [1]; otherwise don't mention sermons. Use Markdown with short sections."""
     prompt = f"Passage: {reference}\nText (KJV): {verse_text or '(look up the passage)'}\n\nSermons:\n{context}"
     try:
-        answer = ai.complete(prompt, system, req.model, max_tokens=2000)
+        answer = ai.complete(prompt, system, req.model, max_tokens=2000, task="verse")
     except ai.AIError as e:
         raise HTTPException(status_code=502, detail=str(e))
     return {"verse_query": req.question, "reference": reference, "verse_text": verse_text,
-            "explanation": answer, "sources": sources, "model_used": ai.resolve_model(req.model)}
+            "explanation": answer, "sources": sources,
+            "model_used": ai.model_for(ai.resolve_model(req.model), "verse")}

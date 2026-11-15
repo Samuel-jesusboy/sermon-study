@@ -171,23 +171,65 @@ def _seg_get(seg, key, default=None):
     return seg.get(key, default) if isinstance(seg, dict) else getattr(seg, key, default)
 
 
+def _use_groq_audio() -> bool:
+    return bool(settings.whisper_provider != "openai" and settings.groq_api_key)
+
+
+def _part_seconds(path: str) -> float:
+    """Length of an ffmpeg part: we encode at a constant 32 kbit/s, so size tells us the duration."""
+    try:
+        return round(os.path.getsize(path) * 8 / 32000, 1)
+    except OSError:
+        return 0.0
+
+
+def _spread(text: str, offset: float, length: float) -> list[Segment]:
+    """When a model returns plain text without times, spread its sentences evenly across the part."""
+    sentences = [x.strip() for x in re.split(r"(?<=[.!?])\s+", text or "") if x.strip()]
+    if not sentences:
+        return []
+    total = sum(len(x) for x in sentences) or 1
+    out, pos = [], 0
+    for x in sentences:
+        out.append({"text": x, "start": offset + length * pos / total, "duration": length * len(x) / total})
+        pos += len(x)
+    return out
+
+
+def _openai_transcribe(fh, model: str):
+    """Ask for segment timestamps; models that only return plain text get a plain request instead."""
+    from openai import OpenAI
+    client = OpenAI(api_key=settings.openai_api_key, max_retries=3, timeout=600)
+    try:
+        return client.audio.transcriptions.create(file=fh, model=model, response_format="verbose_json",
+                                                  timestamp_granularities=["segment"]), True
+    except Exception as e:
+        msg = str(e).lower()
+        if "response_format" not in msg and "timestamp" not in msg and "verbose" not in msg:
+            raise
+        fh.seek(0)
+        return client.audio.transcriptions.create(file=fh, model=model, response_format="json"), False
+
+
 def transcribe_file(path: str, offset: float) -> list[Segment]:
-    use_groq = settings.whisper_provider != "openai" and settings.groq_api_key
+    from . import usage
+    length = _part_seconds(path)
     with open(path, "rb") as fh:
-        if use_groq:
+        if _use_groq_audio():
             from groq import Groq
             client = Groq(api_key=settings.groq_api_key, max_retries=3, timeout=600)
             resp = client.audio.transcriptions.create(
                 file=(os.path.basename(path), fh.read()), model=settings.groq_whisper_model,
                 response_format="verbose_json")
+            provider, model, timed = "groq", settings.groq_whisper_model, True
         else:
-            from openai import OpenAI
-            client = OpenAI(api_key=settings.openai_api_key, max_retries=3, timeout=600)
-            resp = client.audio.transcriptions.create(
-                file=fh, model=settings.openai_whisper_model, response_format="verbose_json")
-    segments = _seg_get(resp, "segments") or []
+            resp, timed = _openai_transcribe(fh, settings.openai_whisper_model)
+            provider, model = "openai", settings.openai_whisper_model
+    seconds = float(_seg_get(resp, "duration", 0) or 0) or length
+    usage.record("transcribe", provider, model, audio_seconds=seconds)
+
     out = []
-    for s in segments:
+    for s in (_seg_get(resp, "segments") or []) if timed else []:
         text = (_seg_get(s, "text", "") or "").strip()
         if not text:
             continue
@@ -195,9 +237,7 @@ def transcribe_file(path: str, offset: float) -> list[Segment]:
         end = float(_seg_get(s, "end", start) or start)
         out.append({"text": text, "start": offset + start, "duration": max(0.0, end - start)})
     if not out:
-        text = (_seg_get(resp, "text", "") or "").strip()
-        if text:
-            out.append({"text": text, "start": offset, "duration": 0.0})
+        out = _spread(_seg_get(resp, "text", "") or "", offset, seconds)
     return out
 
 
@@ -205,9 +245,12 @@ def transcribe_audio(path: str, progress: Optional[Progress] = None, base_progre
                      span: int = 25) -> list[Segment]:
     if not _whisper_ready():
         raise TranscriptError("Audio transcription needs GROQ_API_KEY or OPENAI_API_KEY.")
+    # OpenAI's newer transcription models may return text without timestamps; shorter parts keep the
+    # spread-out times within about two minutes of the truth. Cost is per minute either way.
+    chunk = 600 if _use_groq_audio() else 120
     workdir = tempfile.mkdtemp(prefix="split_")
     try:
-        parts = split_audio(path, workdir)
+        parts = split_audio(path, workdir, chunk)
         segments: list[Segment] = []
         for i, (part, offset) in enumerate(parts):
             if progress:

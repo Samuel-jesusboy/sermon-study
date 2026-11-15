@@ -17,7 +17,7 @@ router = APIRouter()
 
 LIST_COLUMNS = ("id, title, church_name, church_id, preacher, main_theme, summary, topics, video_id, source, "
                 "is_public, duration_seconds, sermon_start_info, created_at, sermon_date, series, main_text, "
-                "central_message, curation_version")
+                "central_message, curation_version, cost_usd")
 
 
 class SermonRequest(BaseModel):
@@ -30,6 +30,7 @@ class SermonRequest(BaseModel):
     sermon_date: Optional[str] = None
     series: Optional[str] = ""
     main_text: Optional[str] = ""
+    premium: bool = False  # write the document with the premium-tier model
     force: bool = False  # process again even if this video is already in the library
 
 
@@ -43,6 +44,7 @@ class PasteRequest(BaseModel):
     sermon_date: Optional[str] = None
     series: Optional[str] = ""
     main_text: Optional[str] = ""
+    premium: bool = False
 
 
 class PlaylistRequest(BaseModel):
@@ -55,6 +57,7 @@ class PlaylistRequest(BaseModel):
 
 class RecurateRequest(BaseModel):
     model: Optional[str] = None
+    premium: bool = False
 
 
 class SermonUpdate(BaseModel):
@@ -117,7 +120,8 @@ def process_sermon(req: SermonRequest, user: CurrentUser = Depends(get_current_u
         if found:
             return {"job": None, "existing_sermon_id": found[video_id]}
     check_limit(user)
-    extra = {"sermon_date": clean_date(req.sermon_date), "series": req.series or "", "main_text": req.main_text or ""}
+    extra = {"sermon_date": clean_date(req.sermon_date), "series": req.series or "", "main_text": req.main_text or "",
+             "premium": req.premium}
     job = queue_video(user, video_id, req.model, req.church_name, req.preacher, req.church_id, req.sermon_start_time, extra)
     return {"job": job, "existing_sermon_id": None}
 
@@ -128,7 +132,7 @@ def paste_transcript(req: PasteRequest, user: CurrentUser = Depends(get_current_
     job_input = {"source": "paste", "transcript_text": req.transcript_text[:400_000], "filename": req.title or "",
                  "model": req.model, "church_name": req.church_name or "", "preacher": req.preacher or "",
                  "sermon_start_time": req.sermon_start_time, "sermon_date": clean_date(req.sermon_date),
-                 "series": req.series or "", "main_text": req.main_text or ""}
+                 "series": req.series or "", "main_text": req.main_text or "", "premium": req.premium}
     job = jobs.create_job(user.db, user.id, job_input)
     jobs.submit(user.token, user.id, job["id"], job_input)
     return {"job": job}
@@ -141,6 +145,7 @@ ALLOWED_UPLOADS = (".mp3", ".m4a", ".wav", ".aac", ".ogg", ".opus", ".flac", ".w
 async def upload_sermon(file: UploadFile = File(...), model: str = Form(""), church_name: str = Form(""),
                         preacher: str = Form(""), sermon_start_time: str = Form(""),
                         sermon_date: str = Form(""), series: str = Form(""), main_text: str = Form(""),
+                        premium: bool = Form(False),
                         user: CurrentUser = Depends(get_current_user)):
     name = os.path.basename(file.filename or "sermon")
     if not name.lower().endswith(ALLOWED_UPLOADS):
@@ -162,7 +167,8 @@ async def upload_sermon(file: UploadFile = File(...), model: str = Form(""), chu
     title = os.path.splitext(name)[0].replace("_", " ").strip()
     job_input = {"source": "upload", "filename": title, "model": model or None, "church_name": church_name,
                  "preacher": preacher, "sermon_start_time": sermon_start_time or None,
-                 "sermon_date": clean_date(sermon_date), "series": series, "main_text": main_text}
+                 "sermon_date": clean_date(sermon_date), "series": series, "main_text": main_text,
+                 "premium": premium}
     job = jobs.create_job(user.db, user.id, job_input)
     jobs.submit(user.token, user.id, job["id"], job_input, upload_path=path)
     return {"job": job}
@@ -312,7 +318,7 @@ def update_sermon(sermon_id: str, req: SermonUpdate, user: CurrentUser = Depends
 def recurate_sermon(sermon_id: str, req: RecurateRequest, user: CurrentUser = Depends(get_current_user)):
     """Rewrite a sermon's document from its saved transcript, in the latest format."""
     get_sermon(sermon_id, user)  # 404 if it isn't yours
-    job_input = {"source": "recurate", "sermon_id": sermon_id, "model": req.model}
+    job_input = {"source": "recurate", "sermon_id": sermon_id, "model": req.model, "premium": req.premium}
     job = jobs.create_job(user.db, user.id, job_input)
     jobs.submit(user.token, user.id, job["id"], job_input)
     return {"job": job}

@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from .. import ai
+from .. import ai, usage
 from ..auth import CurrentUser, get_current_user
 
 router = APIRouter()
@@ -32,6 +32,12 @@ def sermon_digest(s: dict) -> str:
 
 @router.post("/generate")
 def generate_study_guide(req: StudyGuideRequest, user: CurrentUser = Depends(get_current_user)):
+    with usage.tracking(user.db, user.id) as t:
+        out = _generate(req, user)
+    return {**out, "cost_usd": t.total_cost}
+
+
+def _generate(req: StudyGuideRequest, user: CurrentUser) -> dict:
     cols = "id, title, preacher, church_name, summary, main_theme, full_notes, all_bible_verses, study_questions, topics"
     q = user.db.table("sermons").select(cols).eq("user_id", user.id)
     if req.sermon_ids:
@@ -72,10 +78,10 @@ Format in Markdown. Start with a one-paragraph overview. Then for each week:
 ### This week's challenge
 ### Prayer focus"""
     try:
-        guide = ai.complete(prompt, system, req.model, max_tokens=8000)
+        guide = ai.complete(prompt, system, req.model, max_tokens=8000, task="guide")
     except ai.AIError as e:
         raise HTTPException(status_code=502, detail=str(e))
-    model = ai.resolve_model(req.model)
+    model = ai.model_for(ai.resolve_model(req.model), "guide")
     saved = user.db.table("study_guides").insert({
         "user_id": user.id, "weeks": req.weeks, "theme": req.theme or "", "content": guide,
         "model_used": model, "sermons_count": len(sermons)}).execute().data

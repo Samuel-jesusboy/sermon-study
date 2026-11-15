@@ -32,11 +32,31 @@ class Settings:
     openai_api_key = _env("OPENAI_API_KEY")
     groq_api_key = _env("GROQ_API_KEY")
 
-    # Model names live here, not in code, so a retired model is a config change.
-    claude_model = _env("CLAUDE_MODEL", "claude-sonnet-5-5")
-    openai_model = _env("OPENAI_MODEL", "gpt-5.5")
-    groq_model = _env("GROQ_MODEL", "openai/gpt-oss-120b")
-    default_model = _env("DEFAULT_AI", "claude")
+    # Each provider has four tiers, and each job uses the tier that fits it (see TASK_TIERS in ai.py):
+    #   main    - writing sermon documents and study guides (the product; quality matters most)
+    #   premium - an optional upgrade for important sermons
+    #   fast    - Ask and verse explanations (frequent, short, grounded in excerpts)
+    #   tiny    - finding where the sermon starts (a simple classification)
+    # The older single-model variables (OPENAI_MODEL, CLAUDE_MODEL, GROQ_MODEL) still set the main tier.
+    openai_models = {
+        "main": _env("OPENAI_MODEL_MAIN", _env("OPENAI_MODEL", "gpt-5.4")),
+        "premium": _env("OPENAI_MODEL_PREMIUM", "gpt-5.5"),
+        "fast": _env("OPENAI_MODEL_FAST", "gpt-5.4-mini"),
+        "tiny": _env("OPENAI_MODEL_TINY", "gpt-5.4-nano"),
+    }
+    claude_models = {
+        "main": _env("CLAUDE_MODEL_MAIN", _env("CLAUDE_MODEL", "claude-sonnet-5-5")),
+        "premium": _env("CLAUDE_MODEL_PREMIUM", "claude-opus-5-5"),
+        "fast": _env("CLAUDE_MODEL_FAST", "claude-haiku-5-5"),
+        "tiny": _env("CLAUDE_MODEL_TINY", "claude-haiku-5-5"),
+    }
+    groq_models = {
+        "main": _env("GROQ_MODEL_MAIN", _env("GROQ_MODEL", "openai/gpt-oss-120b")),
+        "premium": _env("GROQ_MODEL_PREMIUM", "openai/gpt-oss-120b"),
+        "fast": _env("GROQ_MODEL_FAST", "openai/gpt-oss-120b"),
+        "tiny": _env("GROQ_MODEL_TINY", "openai/gpt-oss-20b"),
+    }
+    default_model = _env("DEFAULT_AI", "openai")
     notes_max_tokens = _int("NOTES_MAX_TOKENS", 16000)
 
     # Search: embeddings need OPENAI_API_KEY; without it, Ask uses full-text search.
@@ -51,8 +71,10 @@ class Settings:
     ytdlp_cookies_file = _env("YTDLP_COOKIES_FILE")
     transcript_languages = [x.strip() for x in _env("TRANSCRIPT_LANGUAGES", "en,en-US,en-GB,en-NG").split(",") if x.strip()]
     whisper_provider = _env("WHISPER_PROVIDER", "groq")  # groq | openai
+    # Turbo is $0.04/hour; set whisper-large-v3 ($0.111/hour) for more accuracy on accented speech.
     groq_whisper_model = _env("GROQ_WHISPER_MODEL", "whisper-large-v3-turbo")
-    openai_whisper_model = _env("OPENAI_WHISPER_MODEL", "whisper-1")
+    # whisper-1 is deprecated (removed Feb 2027); gpt-transcribe is OpenAI's replacement.
+    openai_whisper_model = _env("OPENAI_WHISPER_MODEL", "gpt-transcribe")
     max_upload_mb = _int("MAX_UPLOAD_MB", 200)
 
     # Jobs and limits
@@ -65,6 +87,9 @@ class Settings:
 
     # Public link base used in share text (the frontend URL).
     app_url = _env("APP_URL", "http://localhost:3000").rstrip("/")
+
+    def models_for(self, provider: str) -> dict:
+        return {"openai": self.openai_models, "claude": self.claude_models, "groq": self.groq_models}[provider]
 
     def available_models(self) -> list[str]:
         models = []

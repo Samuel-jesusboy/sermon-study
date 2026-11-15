@@ -70,14 +70,31 @@ YouTube blocks caption requests from most cloud servers, so a link that works on
 - set `YTDLP_COOKIES_FILE` to a cookies file exported from a browser signed in to YouTube, or
 - use **Upload audio** or **Paste transcript**, which skip YouTube entirely.
 
+## Models and cost
+
+Each job uses the model tier that fits it, so frequent simple work never runs on the most expensive model:
+
+| Job | OpenAI (default) | Claude | Groq |
+| --- | --- | --- | --- |
+| Sermon documents, study guides (`main`) | gpt-5.4 | claude-sonnet-5-5 | gpt-oss-120b |
+| Premium documents (`premium`, opt-in per sermon) | gpt-5.5 | claude-opus-5-5 | gpt-oss-120b |
+| Ask, verse explanations (`fast`) | gpt-5.4-mini | claude-haiku-5-5 | gpt-oss-120b |
+| Finding the sermon start (`tiny`) | gpt-5.4-nano | claude-haiku-5-5 | gpt-oss-20b |
+| Search indexing | text-embedding-3-small | | |
+| Audio transcription | gpt-transcribe | | whisper-large-v3-turbo (used first) |
+
+Change any of them with environment variables such as `OPENAI_MODEL_MAIN` or `OPENAI_MODEL_FAST` (see `backend/.env.example`).
+
+Every AI call is recorded in the `ai_usage` table with its tokens and estimated cost. The **Usage** screen shows spend this month, by day, by job and by model, plus the cost of each sermon. Estimates use list prices in `backend/app/pricing.py`; override with `PRICE_OVERRIDES` when prices change. The prompts put the fixed instructions first so providers can cache them.
+
 ## Configuration
 
 All settings are environment variables; see `backend/.env.example`. The useful ones:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `CLAUDE_MODEL` / `OPENAI_MODEL` / `GROQ_MODEL` | `claude-sonnet-5-5` / `gpt-5.5` / `openai/gpt-oss-120b` | Change models without code changes |
-| `DEFAULT_AI` | `claude` | Provider used when the user hasn't picked one |
+| `DEFAULT_AI` | `openai` | Provider used when the user hasn't picked one |
+| `OPENAI_MODEL_MAIN` / `_PREMIUM` / `_FAST` / `_TINY` | see table above | Model per job tier |
 | `EMBEDDINGS_ENABLED` | `true` | Semantic search for Ask (needs `OPENAI_API_KEY`) |
 | `MONTHLY_SERMON_LIMIT` | `0` (unlimited) | Per-user monthly cap |
 | `PLAYLIST_MAX_VIDEOS` | `25` | Max videos queued from one playlist |

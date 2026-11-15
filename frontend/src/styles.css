@@ -310,3 +310,26 @@ a.btn { text-decoration: none; }
   .doc-section { break-inside: auto; }
   .doc-h { break-after: avoid; }
 }
+
+/* usage and cost */
+.stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+.stat { background: white; border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); }
+.stat-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-soft); }
+.stat-value { font-family: 'Lora', serif; font-size: 24px; color: var(--purple); margin-top: 4px; }
+.day-bars { display: flex; align-items: flex-end; gap: 4px; height: 120px; padding-top: 6px; }
+.day-bar { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; min-width: 8px; }
+.day-bar div { width: 100%; background: var(--gold); border-radius: 3px 3px 0 0; }
+.day-bar span { font-size: 9px; color: var(--text-soft); margin-top: 4px; }
+.usage-grid { align-items: start; }
+.usage-grid .card { margin-bottom: 0; }
+.usage-grid + .card, .usage-grid { margin-bottom: 1rem; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; background: var(--cream); padding: 1px 5px; border-radius: 4px; }
+.premium-check { align-items: flex-start; background: var(--gold-light); border-radius: var(--radius-sm); padding: 10px 12px; margin: 4px 0 14px; line-height: 1.5; }
+.premium-check input { margin-top: 3px; }
+.recurate-panel { background: var(--purple-light); padding: 12px 1.25rem; border-top: 1px solid var(--border); }
+.cost-line { margin-top: 8px; }
+.active-link { color: var(--purple) !important; font-weight: 600; }
+@media (max-width: 640px) { .stat-row { grid-template-columns: 1fr 1fr; } }
+
+.usage-grid .doc-table th { width: 55%; }
+.usage-grid code, .doc-table code { white-space: nowrap; }

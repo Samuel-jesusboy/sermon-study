@@ -34,19 +34,34 @@ def db(monkeypatch):
     return fake
 
 
+class FakeCalls(list):
+    """Prompts sent to the AI (a list, for older assertions) plus the (provider, task, model) of each call."""
+    def __init__(self):
+        super().__init__()
+        self.meta = []
+
+
 @pytest.fixture
 def fake_ai(monkeypatch):
-    calls = []
+    calls = FakeCalls()
 
-    def complete(prompt, system, model_choice=None, max_tokens=4096, want_json=False):
+    def fake_complete(prompt, system, choice, max_tokens, want_json, task="notes"):
         calls.append(prompt)
+        model = ai.model_for(choice, task)
+        calls.meta.append((choice, task, model))
+        usage_obj = {"prompt_tokens": 10_000, "completion_tokens": 2_000, "prompt_tokens_details": {"cached_tokens": 4_000}}
         if "sermon_start_seconds" in prompt:
-            return '{"sermon_start_seconds": 600, "confidence": "high", "reason": "Turn your Bibles"}'
-        if "Return exactly this JSON structure" in prompt:
+            text = '{"sermon_start_seconds": 600, "confidence": "high", "reason": "Turn your Bibles"}'
+        elif "Return exactly this JSON structure" in prompt:
             import json
-            return json.dumps(NOTES)
-        return "Grace is God's gift [1]."
-    monkeypatch.setattr(ai, "complete", complete)
+            text = json.dumps(NOTES)
+        else:
+            text = "Grace is God's gift [1]."
+        return ai._Reply(text, False, model, usage_obj)
+    monkeypatch.setattr(ai, "_complete", fake_complete)
+    monkeypatch.setattr(ai.settings, "default_model", "openai")
+    monkeypatch.setattr(ai.settings, "openai_api_key", "test-key")
+    monkeypatch.setattr(ai.settings, "embeddings_enabled", False)
     return calls
 
 
@@ -261,3 +276,96 @@ def test_library_search_finds_words_said_in_transcript(db, client):
     assert rows[0]["id"] == "s1"
     assert rows[0]["transcript_match"]["time"] == "21:05"
     assert "mustard seed" in rows[0]["transcript_match"]["excerpt"]
+
+
+def test_each_task_uses_its_tier_and_costs_are_recorded(db, fake_ai, client, sync_jobs, monkeypatch):
+    monkeypatch.setattr(transcripts, "video_details", lambda vid: {"title": "", "channel": "Grace Church"})
+    monkeypatch.setattr(transcripts, "fetch_captions", lambda vid: SEGMENTS)
+    job_id = client.post("/sermons/process", json={"url": "dQw4w9WgXcQ"}).json()["job"]["id"]
+    assert client.get(f"/jobs/{job_id}").json()["status"] == "done"
+    assert ("openai", "start", "gpt-5.4-nano") in fake_ai.meta
+    assert ("openai", "notes", "gpt-5.4") in fake_ai.meta
+
+    rows = db.tables["ai_usage"]
+    by_task = {r["task"]: r for r in rows}
+    assert by_task["notes"]["model"] == "gpt-5.4" and by_task["start"]["model"] == "gpt-5.4-nano"
+    assert all(r["job_id"] == job_id and r["user_id"] == USER for r in rows)
+    sermon = db.tables["sermons"][0]
+    assert all(r["sermon_id"] == sermon["id"] for r in rows)
+    # gpt-5.4: 6,000 uncached x $2.50 + 4,000 cached x $0.25 + 2,000 out x $15, per 1M tokens
+    assert by_task["notes"]["cost_usd"] == pytest.approx(0.046)
+    # gpt-5.4-nano: 6,000 x $0.20 + 4,000 x $0.02 + 2,000 x $1.25
+    assert by_task["start"]["cost_usd"] == pytest.approx(0.00378)
+    assert float(sermon["cost_usd"]) == pytest.approx(0.04978)
+    assert sermon["models_used"] == {"start": "gpt-5.4-nano", "notes": "gpt-5.4"}
+    assert sermon["model_used"] == "gpt-5.4"
+    job = db.tables["jobs"][0]
+    assert float(job["cost_usd"]) == pytest.approx(0.04978)
+
+
+def test_premium_uses_premium_model(db, fake_ai, client, sync_jobs, monkeypatch):
+    monkeypatch.setattr(transcripts, "video_details", lambda vid: {"title": "", "channel": ""})
+    monkeypatch.setattr(transcripts, "fetch_captions", lambda vid: SEGMENTS)
+    client.post("/sermons/process", json={"url": "dQw4w9WgXcQ", "premium": True})
+    assert ("openai", "notes_premium", "gpt-5.5") in fake_ai.meta
+    assert db.tables["sermons"][0]["model_used"] == "gpt-5.5"
+
+
+def test_ask_uses_fast_tier_and_reports_cost(db, fake_ai, client):
+    db.tables["sermons"] = [{"id": "s1", "user_id": USER, "title": "T", "created_at": "2026-11-01"}]
+    db.rpc_handlers["search_sermon_chunks"] = lambda p: [
+        {"sermon_id": "s1", "chunk_index": 0, "start_seconds": 60, "content": "grace", "score": 1}]
+    body = client.post("/ask/", json={"question": "What is grace?"}).json()
+    assert body["model_used"] == "gpt-5.4-mini"
+    # 6,000 x $0.75 + 4,000 x $0.075 + 2,000 x $4.50, per 1M
+    assert body["cost_usd"] == pytest.approx(0.0138)
+    assert db.tables["ai_usage"][0]["task"] == "ask" and db.tables["ai_usage"][0]["sermon_id"] is None
+
+
+def test_failed_job_still_records_spend(db, fake_ai, client, sync_jobs, monkeypatch):
+    monkeypatch.setattr(transcripts, "video_details", lambda vid: {"title": "", "channel": ""})
+    monkeypatch.setattr(transcripts, "fetch_captions", lambda vid: SEGMENTS)
+    from app import notes as notes_mod
+
+    def boom(*a, **k):
+        ai.complete("x", "y", None, task="notes")  # spends money, then fails
+        raise ai.AIError("The AI reply was not valid JSON.")
+    monkeypatch.setattr(notes_mod, "write_notes", boom)
+    job_id = client.post("/sermons/process", json={"url": "dQw4w9WgXcQ"}).json()["job"]["id"]
+    job = client.get(f"/jobs/{job_id}").json()
+    assert job["status"] == "failed"
+    assert len(db.tables["ai_usage"]) == 2  # start detection + the failed notes call
+    assert float(db.tables["jobs"][0]["cost_usd"]) > 0
+
+
+def test_usage_summary(db, client):
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    db.tables["sermons"] = [{"id": "s1", "user_id": USER, "title": "Grace", "cost_usd": 0.3,
+                             "models_used": {"notes": "gpt-5.4"}, "created_at": now.isoformat()}]
+    db.tables["ai_usage"] = [
+        {"user_id": USER, "created_at": now.isoformat(), "task": "notes", "provider": "openai", "model": "gpt-5.4",
+         "input_tokens": 15000, "output_tokens": 12000, "cost_usd": 0.28, "sermon_id": "s1"},
+        {"user_id": USER, "created_at": now.isoformat(), "task": "start", "provider": "openai", "model": "gpt-5.4-nano",
+         "input_tokens": 4000, "output_tokens": 100, "cost_usd": 0.001, "sermon_id": "s1"},
+        {"user_id": USER, "created_at": now.isoformat(), "task": "ask", "provider": "openai", "model": "gpt-5.4-mini",
+         "input_tokens": 3000, "output_tokens": 800, "cost_usd": 0.006, "sermon_id": None},
+        {"user_id": "someone-else", "created_at": now.isoformat(), "task": "ask", "provider": "openai",
+         "model": "gpt-5.5", "cost_usd": 9.0, "sermon_id": None},
+        {"user_id": USER, "created_at": (now - timedelta(days=400)).isoformat(), "task": "ask", "provider": "openai",
+         "model": "gpt-5.5", "cost_usd": 5.0, "sermon_id": None},
+    ]
+    u = client.get("/usage").json()
+    assert u["window_total"] == pytest.approx(0.287) and u["calls"] == 3
+    assert u["by_task"][0] == {"task": "notes", "label": "Sermon documents", "cost": 0.28, "calls": 1}
+    assert [m["model"] for m in u["by_model"]] == ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"]
+    assert u["avg_cost_per_sermon"] == pytest.approx(0.281)
+    assert u["recent_sermons"][0]["title"] == "Grace"
+
+
+def test_config_reports_model_per_job(client, monkeypatch):
+    monkeypatch.setattr(main.settings, "openai_api_key", "k")
+    cfg = client.get("/config").json()
+    openai_cfg = next(m for m in cfg["models"] if m["id"] == "openai")
+    assert openai_cfg["tiers"] == {"notes": "gpt-5.4", "notes_premium": "gpt-5.5", "ask": "gpt-5.4-mini",
+                                   "verse": "gpt-5.4-mini", "guide": "gpt-5.4", "start": "gpt-5.4-nano"}

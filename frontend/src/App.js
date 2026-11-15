@@ -9,6 +9,7 @@ import BibleTab from './BibleTab';
 import AskTab from './AskTab';
 import ChurchesTab from './ChurchesTab';
 import StudyGuideTab from './StudyGuideTab';
+import UsageTab from './UsageTab';
 import { supabase } from './supabase';
 import './styles.css';
 
@@ -35,6 +36,7 @@ function Shell() {
       <header className="topbar no-print">
         <div className="topbar-logo"><span>✝︎</span> Sermon Study</div>
         <div className="topbar-right">
+          <button className={`btn btn-ghost btn-sm ${tab === 'usage' ? 'active-link' : ''}`} onClick={() => setTab('usage')}>Usage</button>
           <span className="soft hide-mobile">{session.user?.email}</span>
           <button className="btn btn-ghost btn-sm" onClick={() => supabase.auth.signOut()}>Sign out</button>
         </div>
@@ -46,6 +48,7 @@ function Shell() {
         {tab === 'ask' && <AskTab />}
         {tab === 'churches' && <ChurchesTab />}
         {tab === 'guide' && <StudyGuideTab />}
+        {tab === 'usage' && <UsageTab />}
       </main>
       <nav className="bottom-nav no-print">
         {NAV.map(n => (

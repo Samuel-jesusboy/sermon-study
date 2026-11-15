@@ -3,6 +3,7 @@ import toast from 'react-hot-toast';
 import { api } from './api';
 import { useApp } from './AppContext';
 import SermonDocument from './SermonDocument';
+import { money, tiersFor } from './modelInfo';
 
 export function fmtTime(sec) {
   const s = Math.max(0, Math.floor(sec || 0));
@@ -63,10 +64,14 @@ export default function SermonDetail({ sermon: initial, onBack, onDelete, startA
     } catch (e) { toast.error(e.message); }
   };
 
+  const [recuratePanel, setRecuratePanel] = useState(false);
+  const [premium, setPremium] = useState(false);
+  const tiers = app ? tiersFor(app.config, app.model) : {};
+
   const recurate = async () => {
-    if (!window.confirm('Rewrite this sermon document from its saved transcript, in the latest format? Your title, date, series and sharing stay as they are.')) return;
+    setRecuratePanel(false);
     try {
-      const r = await api.recurate(sermon.id, { model: app?.model || undefined });
+      const r = await api.recurate(sermon.id, { model: app?.model || undefined, premium });
       app?.trackJob(r.job);
       toast.success('Re-curating in the background. The new document opens when it is ready.');
     } catch (e) { toast.error(e.message); }
@@ -142,6 +147,10 @@ export default function SermonDetail({ sermon: initial, onBack, onDelete, startA
           )}
           {sermon.main_theme && <p className="detail-theme">{sermon.main_theme}</p>}
           <p className="detail-summary">{sermon.summary}</p>
+          {!readOnly && (Number(sermon.cost_usd) > 0 || sermon.model_used) && (
+            <p className="soft cost-line">{sermon.model_used && <>Written by <code>{sermon.model_used}</code></>}
+              {Number(sermon.cost_usd) > 0 && <> · AI cost {money(sermon.cost_usd)}</>}</p>
+          )}
           {(sermon.topics || []).length > 0 && (
             <div className="chip-row" style={{ marginTop: 10 }}>{sermon.topics.map(t => <span key={t} className="badge badge-purple">{t}</span>)}</div>
           )}
@@ -155,16 +164,27 @@ export default function SermonDetail({ sermon: initial, onBack, onDelete, startA
               <button className="btn btn-sm" onClick={download}>Download .md</button>
               <button className="btn btn-sm" onClick={() => window.print()}>Print / PDF</button>
               <button className="btn btn-sm" onClick={() => setEditing(true)}>Edit</button>
-              <button className="btn btn-sm" onClick={recurate} title="Rewrite the document from the saved transcript">Re-curate</button>
+              <button className="btn btn-sm" onClick={() => setRecuratePanel(p => !p)} title="Rewrite the document from the saved transcript">Re-curate</button>
               <button className="btn btn-sm btn-danger" onClick={() => onDelete(sermon.id)}>Delete</button>
             </div>
           )}
         </div>
 
+        {recuratePanel && !readOnly && (
+          <div className="recurate-panel no-print">
+            <p className="body small" style={{ marginBottom: 8 }}>Rewrite this document from the saved transcript in the latest format. Title, date, series and sharing stay as they are.</p>
+            {tiers.notes_premium && tiers.notes_premium !== tiers.notes && (
+              <label className="check"><input type="checkbox" checked={premium} onChange={e => setPremium(e.target.checked)} />
+                Premium quality (<code>{tiers.notes_premium}</code> instead of <code>{tiers.notes}</code>, about twice the cost)</label>
+            )}
+            <div className="btn-row"><button className="btn btn-primary btn-sm" onClick={recurate}>Re-curate now</button>
+              <button className="btn btn-sm" onClick={() => setRecuratePanel(false)}>Cancel</button></div>
+          </div>
+        )}
         {outdated && (
           <div className="upgrade no-print">
             <span>This sermon was curated before the full documentation format.</span>
-            <button className="btn btn-sm btn-gold" onClick={recurate}>Upgrade to the new format</button>
+            <button className="btn btn-sm btn-gold" onClick={() => setRecuratePanel(true)}>Upgrade to the new format</button>
           </div>
         )}
         <div className="tabs-row no-print" style={{ margin: '1rem 1.25rem 0' }}>

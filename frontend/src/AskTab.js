@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { api } from './api';
 import { useApp } from './AppContext';
 import ModelSelector from './ModelSelector';
+import { money } from './modelInfo';
 
 const SUGGESTIONS = [
   'What has my pastor taught about faith in hard times?',
@@ -97,6 +98,7 @@ export default function AskTab() {
               </div>
               <div className="markdown"><ReactMarkdown>{answer.answer}</ReactMarkdown></div>
               <Sources sources={answer.sources} />
+              <p className="soft cost-line">Answered by <code>{answer.model_used}</code>{answer.cost_usd > 0 && <> · {money(answer.cost_usd)}</>}</p>
             </div>
           )}
         </>
